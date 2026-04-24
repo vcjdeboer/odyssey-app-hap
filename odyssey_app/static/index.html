@@ -587,7 +587,7 @@
 
   <div class="scan-controls">
     <button class="btn btn-success" id="btnScan" onclick="configureScan()"
-            title="Validate the form, save the run record, send scan settings to the instrument, and wait for hardware initialisation (~7 s). Click Start afterwards to begin the scan.">Configure</button>
+            title="Validate the form, send scan settings to the instrument, and wait for hardware initialisation (~7 s). Reconfigure freely — the run record only saves when you click Start.">Configure</button>
     <button class="btn btn-primary" id="btnStart" onclick="startScan()" disabled>Start</button>
     <button class="btn btn-secondary" id="btnPause" onclick="pauseScan()" disabled>Pause</button>
     <button class="btn btn-secondary" id="btnStop" onclick="stopScan()" disabled
@@ -660,7 +660,7 @@
        records/ and scans/ are on the lab computer; downloads land in your
        browser's Downloads folder. -->
   <div class="location-strip">
-    <span><b>Configure</b> auto-saves the run record to <code>odyssey_app/records/</code> on the lab computer</span>
+    <span><b>Start</b> saves the run record to <code>odyssey_app/records/</code> on the lab computer (not Configure — you can reconfigure freely)</span>
     <span><b>Scan images</b> from the instrument land in <code>odyssey_app/scans/</code></span>
     <span><b>Download PNG / TIFF</b> goes to your browser's Downloads folder</span>
   </div>
@@ -938,25 +938,10 @@ async function configureScan() {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
     });
     const result = await resp.json();
-    if (!resp.ok) {
+    if (resp.ok) {
+      showToast('Configured. Click Start to begin — the run record is saved when you Start.');
+    } else {
       showToast('Error: ' + (result.detail || 'Unknown'), true);
-      return;
-    }
-    // Configure succeeded → auto-save the run record. Failure here is
-    // surfaced but doesn't undo the configure (the scan is still armed).
-    try {
-      const saveResp = await fetch('/api/record', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
-      });
-      const saveBody = await saveResp.json();
-      if (saveResp.ok) {
-        showToast(`Configured — record saved: ${saveBody.filename}. Click Start to begin.`);
-        refreshHistory();
-      } else {
-        showToast('Configured, but record save failed: ' + (saveBody.detail || 'Unknown'), true);
-      }
-    } catch (e) {
-      showToast('Configured, but record save errored: ' + e.message, true);
     }
   } catch (e) { showToast('Error: ' + e.message, true); }
 }
@@ -965,8 +950,29 @@ async function startScan() {
   try {
     const resp = await fetch('/api/scan/start', {method: 'POST'});
     const result = await resp.json();
-    if (resp.ok) showToast('Scan started');
-    else showToast('Error: ' + (result.detail || 'Unknown'), true);
+    if (!resp.ok) {
+      showToast('Error: ' + (result.detail || 'Unknown'), true);
+      return;
+    }
+    showToast('Scan started');
+    // Start is the commit point for the run record. Configure just
+    // arms the instrument; the history panel shows scans that actually
+    // ran (or at least started running). Save-after-start means a
+    // configure-then-never-start sequence leaves no trace.
+    const data = collectRecord();
+    try {
+      const saveResp = await fetch('/api/record', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
+      });
+      const saveBody = await saveResp.json();
+      if (saveResp.ok) {
+        refreshHistory();
+      } else {
+        showToast('Scan started, but record save failed: ' + (saveBody.detail || 'Unknown'), true);
+      }
+    } catch (e) {
+      showToast('Scan started, but record save errored: ' + e.message, true);
+    }
   } catch (e) { showToast('Error: ' + e.message, true); }
 }
 
