@@ -796,6 +796,7 @@ async def list_records():
                 "operator": d.get("operator", ""),
                 "timestamp": d.get("scan_timestamp", ""),
                 "project": d.get("project", ""),
+                "experiment_id": d.get("experiment_id", ""),
                 "scan_group": d.get("scan_group", ""),
                 "scan_settings": {
                     "resolution_um": s.get("resolution_um"),
@@ -812,57 +813,82 @@ async def list_records():
     return records
 
 
+@app.get("/api/experiment/export")
+async def export_experiment(experiment_id: str):
+    """Bundle every record + image for one experiment (session) into a ZIP.
+
+    Experiments are session-scoped — each page load stamps a fresh
+    experiment_id, so this scopes the archive to just the work done
+    in that session. Calls the shared exporter with an experiment_id
+    filter.
+    """
+    return await _export_records_matching(
+        label="experiment_id",
+        value=experiment_id,
+        key_in_record="experiment_id",
+    )
+
+
 @app.get("/api/project/export")
 async def export_project(project: str):
-    """Bundle every record + image for a project into a downloadable ZIP.
+    """Bundle every record + image for a project (across sessions) into a ZIP.
 
-    Archive layout::
+    Project is a cross-session label. See /api/experiment/export for a
+    single-session equivalent. Both delegate to _export_records_matching().
+    """
+    return await _export_records_matching(
+        label="project", value=project, key_in_record="project",
+    )
 
-        <project>/
+
+async def _export_records_matching(
+    label: str, value: str, key_in_record: str,
+):
+    """Build a ZIP of all record files whose ``key_in_record`` matches ``value``.
+
+    Shared by the project + experiment export endpoints. Layout::
+
+        <value>/
           README.md                       # summary + scan list
           records/
-            <timestamp>_<scan_name>.json  # each run's metadata
+            <timestamp>_<scan_name>.json  # full metadata per scan
           scans/
-            <scan_name>-700.tif           # real hardware path
+            <scan_name>-700.tif           # real hardware
             <scan_name>-800.tif
             <scan_name>-700.png           # simulated fallback
             <scan_name>-800.png
-
-    TIFFs are preferred (real hardware). In simulated mode the driver
-    has no real image storage, so per-channel PNGs rendered from the
-    simulator are included instead.
     """
     import zipfile
-    if not project or not project.strip():
-        raise HTTPException(status_code=400, detail="project parameter required")
-    project_clean = project.strip()
+    if not value or not value.strip():
+        raise HTTPException(status_code=400, detail=f"{label} parameter required")
+    clean = value.strip()
 
     matching: list[tuple[Path, dict]] = []
     for f in sorted(RECORDS_DIR.glob("*.json"), reverse=True):
         try:
             d = json.loads(f.read_text())
-            if (d.get("project") or "").strip().lower() == project_clean.lower():
+            if (d.get(key_in_record) or "").strip().lower() == clean.lower():
                 matching.append((f, d))
         except Exception:
             continue
     if not matching:
         raise HTTPException(
             status_code=404,
-            detail=f"No records found for project {project_clean!r}",
+            detail=f"No records found where {label}={clean!r}",
         )
 
-    safe_project = "".join(
-        c if c.isalnum() or c in "-_" else "_" for c in project_clean
-    ) or "project"
+    safe = "".join(
+        c if c.isalnum() or c in "-_" else "_" for c in clean
+    ) or label
     export_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    root = safe_project
+    root = safe
 
     def _readme() -> str:
         lines = [
-            f"# {project_clean}",
+            f"# {clean}",
             "",
             f"Exported {datetime.now().isoformat(timespec='seconds')} from the Odyssey app.",
-            f"Contains {len(matching)} scan record(s) for project `{project_clean}`.",
+            f"Contains {len(matching)} scan record(s) where {label} = `{clean}`.",
             "",
             "## Scans (newest first)",
             "",
@@ -904,7 +930,6 @@ async def export_project(project: str):
                 c if c.isalnum() or c in "-_" else "_" for c in scan_name
             )
 
-            # Prefer real-hardware TIFFs when we have a backend connection.
             tiff_wrote = False
             if (
                 _image_driver and _odyssey_connection
@@ -937,7 +962,7 @@ async def export_project(project: str):
                         )
 
     buf.seek(0)
-    filename = f"{safe_project}_{export_ts}.zip"
+    filename = f"{safe}_{export_ts}.zip"
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",

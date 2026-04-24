@@ -472,7 +472,7 @@
     <div class="section-title">Experiment</div>
     <div class="form-row">
       <div class="field"><label>Project</label><input type="text" id="project" placeholder="VB20260424"
-             oninput="syncIdentity('project'); refreshHistoryDebounced()"></div>
+             oninput="syncIdentity('project')"></div>
       <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"
              oninput="syncIdentity('scanName')" required></div>
     </div>
@@ -589,7 +589,7 @@
     <div class="id-pair">
       <span class="id-label">Project name</span>
       <input type="text" class="id-field" id="projectHeader" placeholder="VB20260424"
-             oninput="syncIdentity('projectHeader'); refreshHistoryDebounced()">
+             oninput="syncIdentity('projectHeader')">
       <span class="slash">/</span>
       <span class="id-label">Scan name</span>
       <input type="text" class="id-field" id="scanNameHeader" placeholder="western_01"
@@ -678,19 +678,25 @@
   </div>
 </div>
 
-<!-- Right column: scan history for the current project -->
+<!-- Right column: scan history for the current EXPERIMENT (session).
+     Each page load stamps a unique experiment_id, so this column shows
+     only the scans started in this browser session. Project is a label
+     shared across sessions and is not the right grouping here. -->
 <div class="history">
   <div class="history-header">
-    <span>Scans in <span id="historyProject" style="color: var(--text);">…</span></span>
+    <span>Scans in this experiment</span>
     <span class="count" id="historyCount">0</span>
   </div>
+  <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 10px; word-break: break-all;">
+    <span id="historyExperimentId">—</span>
+  </div>
   <div class="history-list" id="historyList">
-    <div class="history-empty">No scans saved yet for this project.</div>
+    <div class="history-empty">No scans in this experiment yet.</div>
   </div>
   <div class="history-footer">
-    <button class="btn btn-primary" id="btnExportProject" onclick="exportProject()" disabled
-            title="Bundle every scan record and image for the current project into a ZIP file. The ZIP is downloaded to your browser.">Export project ZIP</button>
-    <div class="hint">Bundles records + images for all scans in <span id="exportProjectName">—</span>.</div>
+    <button class="btn btn-primary" id="btnExportExperiment" onclick="exportExperiment()" disabled
+            title="Bundle every scan record and image for this experiment (session) into a ZIP file. The ZIP is downloaded to your browser.">Export experiment ZIP</button>
+    <div class="hint">Bundles records + images for every scan in this session.</div>
   </div>
 </div>
 </div>
@@ -1801,18 +1807,20 @@ function refreshHistoryDebounced() {
 }
 
 async function refreshHistory() {
-  const project = (document.getElementById('project')?.value || '').trim();
-  const projEl = document.getElementById('historyProject');
+  // Filter by experiment_id (session), NOT project. Experiment IDs are
+  // auto-stamped once per page load, so this correctly scopes the
+  // sidebar to 'this session's work' even if the user reuses a project
+  // name across different sessions.
+  const expId = (document.getElementById('experimentId')?.value || '').trim();
   const listEl = document.getElementById('historyList');
   const countEl = document.getElementById('historyCount');
-  const exportBtn = document.getElementById('btnExportProject');
-  const exportName = document.getElementById('exportProjectName');
+  const expLabel = document.getElementById('historyExperimentId');
+  const exportBtn = document.getElementById('btnExportExperiment');
 
-  projEl.textContent = project || '(no project)';
-  if (exportName) exportName.textContent = project || '—';
+  if (expLabel) expLabel.textContent = expId || '—';
 
-  if (!project) {
-    listEl.innerHTML = '<div class="history-empty">Enter a project name to see history.</div>';
+  if (!expId) {
+    listEl.innerHTML = '<div class="history-empty">No experiment ID — reload the page.</div>';
     countEl.textContent = '0';
     if (exportBtn) exportBtn.disabled = true;
     return;
@@ -1823,12 +1831,12 @@ async function refreshHistory() {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const recs = await resp.json();
     const mine = recs.filter(r =>
-      (r.project || '').trim().toLowerCase() === project.toLowerCase()
+      (r.experiment_id || '').trim() === expId
     );
     countEl.textContent = String(mine.length);
     if (exportBtn) exportBtn.disabled = mine.length === 0;
     if (mine.length === 0) {
-      listEl.innerHTML = '<div class="history-empty">No scans saved yet for this project.</div>';
+      listEl.innerHTML = '<div class="history-empty">No scans in this experiment yet.</div>';
       return;
     }
     listEl.innerHTML = mine.map(renderHistoryItem).join('');
@@ -1839,18 +1847,18 @@ async function refreshHistory() {
   }
 }
 
-async function exportProject() {
-  const project = (document.getElementById('project')?.value || '').trim();
-  if (!project) {
-    showToast('Enter a project name first', true);
+async function exportExperiment() {
+  const expId = (document.getElementById('experimentId')?.value || '').trim();
+  if (!expId) {
+    showToast('No experiment ID — reload the page', true);
     return;
   }
-  const btn = document.getElementById('btnExportProject');
+  const btn = document.getElementById('btnExportExperiment');
   const oldLabel = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Building ZIP…';
   try {
-    const resp = await fetch(`/api/project/export?project=${encodeURIComponent(project)}`);
+    const resp = await fetch(`/api/experiment/export?experiment_id=${encodeURIComponent(expId)}`);
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(`HTTP ${resp.status} — ${body.slice(0, 160)}`);
@@ -1862,12 +1870,12 @@ async function exportProject() {
     const cd = resp.headers.get('Content-Disposition') || '';
     const match = cd.match(/filename="([^"]+)"/);
     a.href = url;
-    a.download = match ? match[1] : `${project}.zip`;
+    a.download = match ? match[1] : `${expId}.zip`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`Exported project ${project}`);
+    showToast(`Exported experiment ${expId}`);
   } catch (e) {
-    showToast(`Project export failed: ${e.message}`, true);
+    showToast(`Experiment export failed: ${e.message}`, true);
   } finally {
     btn.textContent = oldLabel;
     btn.disabled = false;
