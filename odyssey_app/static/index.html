@@ -540,8 +540,14 @@
     <button class="btn btn-small btn-secondary" onclick="resetZoomOnly()"
             title="Reset zoom and pan to fit-to-viewer (leaves brightness/contrast alone)">100%</button>
     <button class="btn btn-small btn-secondary" onclick="zoomBy(1.25)" title="Zoom in">+</button>
+    <!-- 'Select export region' button hidden for now — the underlying export
+         pipeline doesn't yet honour the selected rectangle. The startCrop()
+         handler and crop-overlay div are kept dormant so we can re-enable
+         the button in one line once the server-side crop is wired. -->
+    <!--
     <button class="btn btn-small btn-secondary" onclick="startCrop()"
             title="Draw a rectangle to mark the region used when you Download PNG / TIFF. Does not modify the on-screen image.">Select export region</button>
+    -->
   </div>
 
   <div class="image-viewer" id="imageViewer">
