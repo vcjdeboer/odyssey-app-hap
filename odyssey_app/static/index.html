@@ -926,9 +926,10 @@ async function configureScan() {
     return;
   }
 
-  // Auto-uniquify the scan name against this project's existing scans.
-  // Avoids silently clobbering older records with the same name — each
-  // Configure produces a distinctly-named record visible in history.
+  // Conflict check: if a scan with this (project, scan_name) already
+  // exists on disk, ask the user before silently renaming. This is
+  // more explicit than the old auto-rename-with-toast behaviour —
+  // the researcher sees the collision and decides what to do.
   try {
     const resp = await fetch('/api/records');
     if (resp.ok) {
@@ -937,15 +938,27 @@ async function configureScan() {
         .filter(r => (r.project || '').trim().toLowerCase()
                    === (data.project || '').trim().toLowerCase())
         .map(r => r.scan_name);
-      const unique = uniquifyScanName(data.scan_name, existing);
-      if (unique !== data.scan_name) {
-        showToast(`Scan name '${data.scan_name}' already exists — auto-renamed to '${unique}'`);
-        data.scan_name = unique;
-        // Reflect the change in the form fields so the user sees it.
+
+      if (existing.includes(data.scan_name)) {
+        const suggestion = uniquifyScanName(data.scan_name, existing);
+        const proceed = confirm(
+          `Project "${data.project}" already has a scan called "${data.scan_name}".\n\n` +
+          `OK → continue with auto-renamed "${suggestion}".\n` +
+          `Cancel → stop here so you can change the scan name yourself.`
+        );
+        if (!proceed) {
+          showToast('Configure cancelled — change the scan name and try again', true);
+          // Focus the scan name field so the user can edit it.
+          const hdr = document.getElementById('scanNameHeader');
+          if (hdr && hdr.focus) { hdr.focus(); hdr.select && hdr.select(); }
+          return;
+        }
+        data.scan_name = suggestion;
         const hdr = document.getElementById('scanNameHeader');
         const side = document.getElementById('scanName');
-        if (hdr) hdr.value = unique;
-        if (side) side.value = unique;
+        if (hdr) hdr.value = suggestion;
+        if (side) side.value = suggestion;
+        showToast(`Renamed to '${suggestion}'`);
       }
     }
   } catch (e) { /* non-fatal — proceed with the original name */ }
