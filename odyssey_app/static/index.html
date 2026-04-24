@@ -249,7 +249,7 @@
       <!-- Scan name is also mirrored in the prominent identity row at the -->
       <!-- top of the main pane. Both inputs stay in sync via syncIdentity(). -->
       <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"
-             oninput="syncIdentity('scanName')"></div>
+             oninput="syncIdentity('scanName')" required></div>
       <div class="field"><label>Group (locked, FR-018)</label>
         <span class="locked-field" id="scanGroupLabel">odyssey</span>
         <input type="hidden" id="scanGroup" value="odyssey">
@@ -377,12 +377,13 @@
        here drive the same fields used in the saved metadata record. -->
   <div class="identity-row">
     <div class="id-pair">
-      <span class="id-label">Run</span>
+      <span class="id-label">Project name</span>
       <input type="text" class="id-field" id="projectHeader" placeholder="VB20260424"
-             oninput="syncIdentity('project')">
+             oninput="syncIdentity('projectHeader')">
       <span class="slash">/</span>
-      <input type="text" class="id-field" id="scanNameHeader" placeholder="scan name"
-             oninput="syncIdentity('scanName')">
+      <span class="id-label">Scan name</span>
+      <input type="text" class="id-field" id="scanNameHeader" placeholder="western_01"
+             oninput="syncIdentity('scanNameHeader')">
     </div>
   </div>
 
@@ -609,6 +610,14 @@ function startSafetyNet() {
 
 async function configureScan() {
   const data = collectRecord();
+  // Require a scan name — otherwise /api/image/channels returns 400 on
+  // scan_complete and we can't look up the result later.
+  if (!data.scan_name || !data.scan_name.trim()) {
+    showToast('Enter a scan name first (top of the page)', true);
+    const el = document.getElementById('scanNameHeader') || document.getElementById('scanName');
+    if (el) el.focus();
+    return;
+  }
   try {
     const resp = await fetch('/api/scan/configure', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
@@ -676,12 +685,21 @@ async function onScanComplete(msg) {
     showToast('Scan failed', true);
     return;
   }
+  if (!msg.scan) {
+    // Safety: shouldn't happen now that configureScan guards against
+    // empty scan names, but surface a clear message if it ever does.
+    showToast(`Scan ${outcome} but no scan name — cannot load image`, true);
+    return;
+  }
   showToast(`Scan ${outcome}: ${msg.scan}`);
 
   try {
     const url = `/api/image/channels?scan=${encodeURIComponent(msg.scan)}&group=${encodeURIComponent(msg.group || LOCKED_GROUP)}`;
     const resp = await fetch(url);
-    if (!resp.ok) throw new Error('channels fetch failed: HTTP ' + resp.status);
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`HTTP ${resp.status} — ${body.slice(0, 120)}`);
+    }
     const envelope = await resp.json();
     await populateChannelCache(envelope);
   } catch (e) {
@@ -1105,23 +1123,20 @@ async function exportImage(format, includeFooter) {
 ============================================================================ */
 
 function syncIdentity(which) {
-  // ``which`` is the id of the element the user just edited; copy its value
-  // to the twin in the other location.
-  const pairs = {
-    project:       ['project', 'projectHeader'],
-    projectHeader: ['project', 'projectHeader'],
-    scanName:      ['scanName', 'scanNameHeader'],
-    scanNameHeader:['scanName', 'scanNameHeader'],
+  // Each field's ``oninput`` passes its OWN id; we copy its value straight
+  // to the matching twin. Assigning .value does not fire another oninput
+  // so no loop guard is needed.
+  const twinOf = {
+    project: 'projectHeader',
+    projectHeader: 'project',
+    scanName: 'scanNameHeader',
+    scanNameHeader: 'scanName',
   };
-  const pair = pairs[which];
-  if (!pair) return;
-  const source = document.activeElement && document.activeElement.id === pair[0]
-    ? pair[0]
-    : (document.activeElement && document.activeElement.id === pair[1] ? pair[1] : pair[0]);
-  const twin = source === pair[0] ? pair[1] : pair[0];
-  const val = document.getElementById(source).value;
-  const other = document.getElementById(twin);
-  if (other.value !== val) other.value = val;
+  const twinId = twinOf[which];
+  if (!twinId) return;
+  const source = document.getElementById(which);
+  const twin = document.getElementById(twinId);
+  if (source && twin && twin.value !== source.value) twin.value = source.value;
 }
 
 /* ============================================================================
