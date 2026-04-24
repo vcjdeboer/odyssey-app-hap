@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Odyssey Western Blot Imager</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #00b4d8;
+    --text: #eee;
+    --text-dim: #999;
+    --border: #2a2a4a;
+    --ch700: #ff4444;
+    --ch800: #44cc44;
+    --input-bg: #1e2a45;
+    --success: #4caf50;
+    --warning: #ff9800;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+  }
+  header {
+    background: var(--surface); border-bottom: 2px solid var(--accent);
+    padding: 10px 24px; display: flex; align-items: center; justify-content: space-between;
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header h1 span { color: var(--accent); }
+  .status-bar { display: flex; align-items: center; gap: 16px; font-size: 13px; color: var(--text-dim); }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--success); display: inline-block; }
+  .status-dot.scanning { background: var(--accent); animation: pulse 1s infinite; }
+  .status-dot.paused { background: var(--warning); }
+  .status-dot.disconnected { background: #666; }
+  @keyframes pulse { 50% { opacity: 0.5; } }
+  .conn-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--surface2); }
+  .conn-badge.real { background: var(--success); color: #000; }
+
+  .app { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 48px); }
+
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; padding: 14px; }
+  .section { margin-bottom: 16px; }
+  .section-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px;
+    color: var(--accent); margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border);
+  }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+  .form-row.full { grid-template-columns: 1fr; }
+  .form-row.triple { grid-template-columns: 1fr 1fr 1fr; }
+  .field label { display: block; font-size: 10px; color: var(--text-dim); margin-bottom: 1px; }
+  .field input, .field select, .field textarea {
+    width: 100%; padding: 5px 7px; background: var(--input-bg); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text); font-size: 12px; font-family: inherit;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--accent2); }
+  .field textarea { resize: vertical; min-height: 36px; }
+
+  .ab-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+  .ab-card.ch700 { border-left: 3px solid var(--ch700); }
+  .ab-card.ch800 { border-left: 3px solid var(--ch800); }
+  .ab-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .ab-card-header h4 { font-size: 11px; font-weight: 600; }
+  .channel-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
+  .ch700 .channel-badge { background: var(--ch700); color: #fff; }
+  .ch800 .channel-badge { background: var(--ch800); color: #000; }
+
+  .lane-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .lane-table th { text-align: left; font-size: 10px; font-weight: 600; text-transform: uppercase; color: var(--text-dim); padding: 3px; border-bottom: 1px solid var(--border); }
+  .lane-table td { padding: 2px 3px; }
+  .lane-table input { width: 100%; padding: 3px 5px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 3px; color: var(--text); font-size: 11px; }
+  .lane-num { width: 24px; text-align: center; color: var(--text-dim); font-weight: 700; font-size: 10px; }
+
+  .btn { padding: 7px 14px; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+  .btn:hover { filter: brightness(1.15); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-success { background: var(--success); color: #fff; }
+  .btn-secondary { background: var(--surface2); color: var(--text); }
+  .btn-warning { background: var(--warning); color: #000; }
+  .btn-small { padding: 3px 8px; font-size: 10px; }
+  .btn-row { display: flex; gap: 6px; margin-top: 8px; }
+
+  .main { display: flex; flex-direction: column; padding: 12px; gap: 10px; }
+
+  .scan-controls {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 14px; display: flex; align-items: center; gap: 10px;
+  }
+  .scan-controls .btn { min-width: 70px; }
+  .progress-bar { flex: 1; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent2); width: 0%; transition: width 0.3s; }
+  .scan-status-text { font-size: 12px; color: var(--text-dim); min-width: 120px; text-align: right; }
+
+  .image-controls {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 14px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  .slider-group { display: flex; align-items: center; gap: 6px; }
+  .slider-group label { font-size: 10px; color: var(--text-dim); min-width: 55px; }
+  .slider-group input[type="range"] { width: 100px; accent-color: var(--accent2); }
+  .slider-group .val { font-size: 10px; color: var(--text-dim); min-width: 24px; text-align: right; }
+  .channel-toggles { display: flex; gap: 4px; }
+  .channel-toggle {
+    padding: 4px 10px; border-radius: 4px; font-size: 10px; font-weight: 700;
+    cursor: pointer; border: 2px solid; background: transparent; transition: all 0.15s;
+  }
+  .channel-toggle.ch700 { border-color: var(--ch700); color: var(--ch700); }
+  .channel-toggle.ch700.active { background: var(--ch700); color: #fff; }
+  .channel-toggle.ch800 { border-color: var(--ch800); color: var(--ch800); }
+  .channel-toggle.ch800.active { background: var(--ch800); color: #fff; }
+
+  .image-viewer {
+    flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    display: flex; align-items: center; justify-content: center; min-height: 300px;
+    position: relative; overflow: hidden; cursor: crosshair;
+  }
+  .image-viewer canvas { max-width: 100%; max-height: 100%; }
+  .image-placeholder { text-align: center; color: var(--text-dim); }
+  .image-placeholder .icon { font-size: 36px; margin-bottom: 6px; }
+  .crop-overlay {
+    position: absolute; border: 2px dashed var(--accent2); pointer-events: none;
+    display: none; background: rgba(0, 180, 216, 0.1);
+  }
+
+  .export-bar {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 14px; display: flex; align-items: center; gap: 10px;
+  }
+  .export-bar label { font-size: 11px; color: var(--text-dim); }
+
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; background: var(--surface2);
+    border: 1px solid var(--accent2); border-radius: 6px; padding: 10px 18px;
+    font-size: 13px; opacity: 0; transform: translateY(20px); transition: all 0.3s; z-index: 1000;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.error { border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>Odyssey</span> Western Blot Imager</h1>
+  <div class="status-bar">
+    <span class="conn-badge" id="connBadge">simulated</span>
+    <span id="instrumentId">ODY-1576</span>
+    <span><span class="status-dot" id="statusDot"></span> <span id="statusText">Idle</span></span>
+  </div>
+</header>
+
+<div class="app">
+<div class="sidebar">
+
+  <!-- Experiment -->
+  <div class="section">
+    <div class="section-title">Experiment</div>
+    <div class="form-row">
+      <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="Name"></div>
+      <div class="field"><label>Project</label><input type="text" id="project" placeholder="Project ID"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Experiment ID</label><input type="text" id="experimentId" placeholder="WB-2026-042"></div>
+      <div class="field"><label>Protocol ref</label><input type="text" id="protocolRef" placeholder="DOI or local ID"></div>
+    </div>
+  </div>
+
+  <!-- Scan Settings -->
+  <div class="section">
+    <div class="section-title">Scan Settings</div>
+    <div class="form-row triple">
+      <div class="field"><label>Resolution</label>
+        <select id="resolution">
+          <option value="337">337 um</option><option value="169" selected>169 um</option>
+          <option value="84">84 um</option><option value="42">42 um</option><option value="21">21 um</option>
+        </select></div>
+      <div class="field"><label>Quality</label>
+        <select id="quality">
+          <option value="lowest">Lowest</option><option value="low">Low</option>
+          <option value="medium" selected>Medium</option><option value="high">High</option><option value="highest">Highest</option>
+        </select></div>
+      <div class="field"><label>Focus (mm)</label><input type="number" id="focusOffset" value="0.0" min="0" max="4" step="0.5"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>700 nm intensity</label><input type="number" id="intensity700" value="5" min="0.5" max="10" step="0.5"></div>
+      <div class="field"><label>800 nm intensity</label><input type="number" id="intensity800" value="5" min="0.5" max="10" step="0.5"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"></div>
+      <div class="field"><label>Group</label><input type="text" id="scanGroup" value="public"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Width (cm)</label><input type="number" id="width" value="10" min="1" max="25"></div>
+      <div class="field"><label>Height (cm)</label><input type="number" id="height" value="10" min="1" max="25"></div>
+    </div>
+  </div>
+
+  <!-- Sample Prep -->
+  <div class="section">
+    <div class="section-title">Sample Preparation</div>
+    <div class="form-row triple">
+      <div class="field"><label>Membrane</label>
+        <select id="membraneType"><option value="">--</option><option value="nitrocellulose">Nitrocellulose</option><option value="PVDF">PVDF</option></select></div>
+      <div class="field"><label>Gel</label><input type="text" id="gelType" placeholder="4-12% Bis-Tris"></div>
+      <div class="field"><label>Transfer</label>
+        <select id="transferMethod"><option value="">--</option><option value="wet">Wet</option><option value="semi-dry">Semi-dry</option><option value="iBlot">iBlot</option></select></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Blocking buffer</label><input type="text" id="blockingBuffer" placeholder="5% milk in TBST"></div>
+      <div class="field"><label>Blocking time</label><input type="text" id="blockingDuration" placeholder="1h RT"></div>
+    </div>
+  </div>
+
+  <!-- Primary Antibodies -->
+  <div class="section">
+    <div class="section-title">Primary Antibodies</div>
+    <div class="ab-card ch700">
+      <div class="ab-card-header"><h4>700 nm channel</h4><span class="channel-badge">700</span></div>
+      <div class="form-row">
+        <div class="field"><label>Target</label><input type="text" id="p700Target" placeholder="phospho-ERK"></div>
+        <div class="field"><label>Host</label><select id="p700Host"><option value="">--</option><option value="rabbit">Rabbit</option><option value="mouse">Mouse</option><option value="goat">Goat</option><option value="rat">Rat</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Vendor</label><input type="text" id="p700Vendor" placeholder="Cell Signaling"></div>
+        <div class="field"><label>Catalog #</label><input type="text" id="p700Catalog" placeholder="#4370"></div>
+      </div>
+      <div class="form-row triple">
+        <div class="field"><label>Lot #</label><input type="text" id="p700Lot"></div>
+        <div class="field"><label>RRID</label><input type="text" id="p700Rrid" placeholder="AB_2315112"></div>
+        <div class="field"><label>Dilution</label><input type="text" id="p700Dilution" placeholder="1:1000"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Incubation</label><input type="text" id="p700Incubation" placeholder="overnight 4C"></div>
+        <div class="field"><label>Clonality</label><select id="p700Clonality"><option value="">--</option><option value="monoclonal">Monoclonal</option><option value="polyclonal">Polyclonal</option></select></div>
+      </div>
+    </div>
+    <div class="ab-card ch800">
+      <div class="ab-card-header"><h4>800 nm channel</h4><span class="channel-badge">800</span></div>
+      <div class="form-row">
+        <div class="field"><label>Target</label><input type="text" id="p800Target" placeholder="beta-actin"></div>
+        <div class="field"><label>Host</label><select id="p800Host"><option value="">--</option><option value="rabbit">Rabbit</option><option value="mouse">Mouse</option><option value="goat">Goat</option><option value="rat">Rat</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Vendor</label><input type="text" id="p800Vendor" placeholder="LI-COR"></div>
+        <div class="field"><label>Catalog #</label><input type="text" id="p800Catalog" placeholder="#926-42212"></div>
+      </div>
+      <div class="form-row triple">
+        <div class="field"><label>Lot #</label><input type="text" id="p800Lot"></div>
+        <div class="field"><label>RRID</label><input type="text" id="p800Rrid"></div>
+        <div class="field"><label>Dilution</label><input type="text" id="p800Dilution" placeholder="1:5000"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Incubation</label><input type="text" id="p800Incubation" placeholder="1h RT"></div>
+        <div class="field"><label>Clonality</label><select id="p800Clonality"><option value="">--</option><option value="monoclonal">Monoclonal</option><option value="polyclonal">Polyclonal</option></select></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Secondary -->
+  <div class="section">
+    <div class="section-title">Secondary Antibodies</div>
+    <div class="form-row">
+      <div class="field"><label>700 nm secondary</label><input type="text" id="s700Dye" placeholder="IRDye 680RD anti-rabbit"></div>
+      <div class="field"><label>800 nm secondary</label><input type="text" id="s800Dye" placeholder="IRDye 800CW anti-mouse"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>700 dilution</label><input type="text" id="s700Dilution" placeholder="1:10000"></div>
+      <div class="field"><label>800 dilution</label><input type="text" id="s800Dilution" placeholder="1:10000"></div>
+    </div>
+  </div>
+
+  <!-- Lanes -->
+  <div class="section">
+    <div class="section-title">Lanes <button class="btn btn-small btn-secondary" onclick="addLane()" style="float:right;margin-top:-3px">+ Add</button></div>
+    <table class="lane-table">
+      <thead><tr><th>#</th><th>Sample</th><th>Treatment</th><th>ug</th><th></th></tr></thead>
+      <tbody id="laneBody"></tbody>
+    </table>
+  </div>
+
+  <!-- Notes -->
+  <div class="section">
+    <div class="section-title">Notes</div>
+    <div class="form-row full"><div class="field"><textarea id="notes" rows="2" placeholder="Additional observations..."></textarea></div></div>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="saveRecord()" style="flex:1">Save Package</button>
+    <button class="btn btn-secondary" onclick="loadRecords()">History</button>
+  </div>
+</div>
+
+<!-- ==================== MAIN ==================== -->
+<div class="main">
+  <div class="scan-controls">
+    <button class="btn btn-success" id="btnScan" onclick="configureScan()">Scan</button>
+    <button class="btn btn-primary" id="btnStart" onclick="startScan()" disabled>Start</button>
+    <button class="btn btn-secondary" id="btnPause" onclick="pauseScan()" disabled>Pause</button>
+    <button class="btn btn-secondary" id="btnStop" onclick="stopScan()" disabled>Stop</button>
+    <button class="btn btn-secondary" id="btnCancel" onclick="cancelScan()" disabled>Cancel</button>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <span class="scan-status-text" id="scanStatusText">Idle</span>
+  </div>
+
+  <div class="image-controls">
+    <div class="channel-toggles">
+      <button class="channel-toggle ch700 active" id="toggle700" onclick="toggleChannel(700)">700</button>
+      <button class="channel-toggle ch800 active" id="toggle800" onclick="toggleChannel(800)">800</button>
+    </div>
+    <div class="slider-group">
+      <label>Brightness</label>
+      <input type="range" id="brightness" min="-100" max="100" value="0" oninput="updateDisplay()">
+      <span class="val" id="brightnessVal">0</span>
+    </div>
+    <div class="slider-group">
+      <label>Contrast</label>
+      <input type="range" id="contrast" min="-100" max="100" value="0" oninput="updateDisplay()">
+      <span class="val" id="contrastVal">0</span>
+    </div>
+    <button class="btn btn-small btn-secondary" id="btnInvert" onclick="invertImage()">Invert</button>
+    <button class="btn btn-small btn-secondary" onclick="resetDisplay()">Reset</button>
+    <button class="btn btn-small btn-secondary" onclick="startCrop()">Crop</button>
+  </div>
+
+  <div class="image-viewer" id="imageViewer">
+    <canvas id="imageCanvas" style="display:none"></canvas>
+    <div class="image-placeholder" id="imagePlaceholder">
+      <div class="icon">&#x1F4F7;</div>
+      <div>No scan loaded</div>
+      <div style="font-size:11px;margin-top:4px">Run a scan or click Scan to load preview</div>
+    </div>
+    <div class="crop-overlay" id="cropOverlay"></div>
+  </div>
+
+  <div class="export-bar">
+    <label>Export:</label>
+    <button class="btn btn-small btn-secondary" onclick="exportImage('png', true)">PNG + footer</button>
+    <button class="btn btn-small btn-secondary" onclick="exportImage('png', false)">PNG clean</button>
+    <button class="btn btn-small btn-secondary" onclick="exportImage('tiff', true)">TIFF + metadata</button>
+    <button class="btn btn-small btn-secondary" id="btnLive" onclick="toggleAutoUpdate()" style="margin-left:auto">Live preview: OFF</button>
+  </div>
+</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// -- State --
+let laneCount = 0;
+let ws = null;
+let inverted = false;
+let cropping = false;
+let cropStart = null;
+let autoUpdateInterval = null;
+let currentImage = null; // HTMLImageElement
+
+// -- WebSocket --
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'status') updateStatus(msg);
+    if (msg.type === 'scan_complete') onScanComplete(msg);
+  };
+  ws.onclose = () => setTimeout(connectWS, 2000);
+}
+
+function updateStatus(s) {
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('scanStatusText');
+  const fill = document.getElementById('progressFill');
+
+  dot.className = 'status-dot';
+  if (s.state === 'Scanning') dot.classList.add('scanning');
+  if (s.state === 'Paused') dot.classList.add('paused');
+  if (s.state === 'Idle') dot.classList.add('');
+
+  text.textContent = s.state + (s.progress > 0 && s.progress < 100 ? ` ${s.progress}%` : '');
+  if (s.time_remaining) text.textContent += ` (${s.time_remaining})`;
+  fill.style.width = s.progress + '%';
+
+  // Button states
+  const idle = s.state === 'Idle' || s.state === 'Configured';
+  const scanning = s.state === 'Scanning';
+  const paused = s.state === 'Paused';
+  const configured = s.state === 'Configured';
+
+  document.getElementById('btnScan').disabled = scanning;
+  document.getElementById('btnStart').disabled = !configured && !paused;
+  document.getElementById('btnPause').disabled = !scanning;
+  document.getElementById('btnStop').disabled = idle;
+  document.getElementById('btnCancel').disabled = idle;
+}
+
+function onScanComplete(msg) {
+  showToast('Scan complete: ' + msg.scan);
+  loadPreview();
+}
+
+// -- Scan control --
+async function configureScan() {
+  const data = collectRecord();
+  try {
+    const resp = await fetch('/api/scan/configure', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
+    });
+    const result = await resp.json();
+    if (resp.ok) {
+      showToast('Configured. Click Start to begin scanning.');
+      loadPreview();
+    } else {
+      showToast('Error: ' + (result.detail || 'Unknown'), true);
+    }
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function startScan() {
+  try {
+    const resp = await fetch('/api/scan/start', {method: 'POST'});
+    const result = await resp.json();
+    if (resp.ok) showToast('Scan started');
+    else showToast('Error: ' + (result.detail || 'Unknown'), true);
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function pauseScan() {
+  try {
+    await fetch('/api/scan/pause', {method: 'POST'});
+    showToast('Scan paused (instrument locked)');
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function stopScan() {
+  try {
+    await fetch('/api/scan/stop', {method: 'POST'});
+    showToast('Scan stopped — files saved');
+    loadPreview();
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function cancelScan() {
+  if (!confirm('Cancel scan? Files will NOT be saved.')) return;
+  try {
+    await fetch('/api/scan/cancel', {method: 'POST'});
+    showToast('Scan cancelled');
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+// -- Image loading --
+async function loadPreview() {
+  try {
+    const group = document.getElementById('scanGroup').value || 'public';
+    const scan = document.getElementById('scanName').value || '';
+    const c700 = document.getElementById('toggle700').classList.contains('active');
+    const c800 = document.getElementById('toggle800').classList.contains('active');
+    let channels = '';
+    if (c700 && c800) channels = '700 800';
+    else if (c700) channels = '700';
+    else if (c800) channels = '800';
+    else channels = '700 800';
+
+    const bg = inverted ? 'white' : 'black';
+    const url = `/api/image/preview?group=${encodeURIComponent(group)}&scan=${encodeURIComponent(scan)}&channels=${encodeURIComponent(channels)}&background=${bg}&contrast700=5&contrast800=5`;
+
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('Preview failed');
+    const blob = await resp.blob();
+    const imgUrl = URL.createObjectURL(blob);
+
+    const img = new Image();
+    img.onload = () => {
+      currentImage = img;
+      renderCanvas();
+      document.getElementById('imagePlaceholder').style.display = 'none';
+      document.getElementById('imageCanvas').style.display = 'block';
+    };
+    img.src = imgUrl;
+  } catch(e) {
+    console.error('Preview load error:', e);
+  }
+}
+
+function renderCanvas() {
+  if (!currentImage) return;
+  const canvas = document.getElementById('imageCanvas');
+  const ctx = canvas.getContext('2d');
+  const viewer = document.getElementById('imageViewer');
+
+  // Fit to viewer
+  const maxW = viewer.clientWidth - 20;
+  const maxH = viewer.clientHeight - 20;
+  const scale = Math.min(maxW / currentImage.width, maxH / currentImage.height, 1);
+  canvas.width = currentImage.width * scale;
+  canvas.height = currentImage.height * scale;
+
+  ctx.drawImage(currentImage, 0, 0, canvas.width, canvas.height);
+
+  // Apply brightness/contrast
+  const brightness = parseInt(document.getElementById('brightness').value);
+  const contrast = parseInt(document.getElementById('contrast').value);
+
+  if (brightness !== 0 || contrast !== 0) {
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = imgData.data;
+    const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+    for (let i = 0; i < d.length; i += 4) {
+      for (let c = 0; c < 3; c++) {
+        let v = d[i + c];
+        v += brightness;
+        v = contrastFactor * (v - 128) + 128;
+        d[i + c] = Math.max(0, Math.min(255, v));
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+}
+
+function updateDisplay() {
+  document.getElementById('brightnessVal').textContent = document.getElementById('brightness').value;
+  document.getElementById('contrastVal').textContent = document.getElementById('contrast').value;
+  renderCanvas();
+}
+
+function toggleChannel(ch) {
+  const btn = document.getElementById('toggle' + ch);
+  btn.classList.toggle('active');
+  loadPreview();
+}
+
+function invertImage() {
+  inverted = !inverted;
+  document.getElementById('btnInvert').classList.toggle('btn-warning', inverted);
+  loadPreview();
+}
+
+function resetDisplay() {
+  document.getElementById('brightness').value = 0;
+  document.getElementById('contrast').value = 0;
+  document.getElementById('brightnessVal').textContent = '0';
+  document.getElementById('contrastVal').textContent = '0';
+  inverted = false;
+  document.getElementById('btnInvert').classList.remove('btn-warning');
+  loadPreview();
+}
+
+// -- Crop --
+function startCrop() {
+  cropping = !cropping;
+  if (cropping) {
+    showToast('Click and drag on the image to crop');
+    document.getElementById('imageViewer').style.cursor = 'crosshair';
+  } else {
+    document.getElementById('imageViewer').style.cursor = 'default';
+    document.getElementById('cropOverlay').style.display = 'none';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const viewer = document.getElementById('imageViewer');
+  viewer.addEventListener('mousedown', (e) => {
+    if (!cropping) return;
+    const rect = viewer.getBoundingClientRect();
+    cropStart = {x: e.clientX - rect.left, y: e.clientY - rect.top};
+    const overlay = document.getElementById('cropOverlay');
+    overlay.style.display = 'block';
+    overlay.style.left = cropStart.x + 'px';
+    overlay.style.top = cropStart.y + 'px';
+    overlay.style.width = '0px';
+    overlay.style.height = '0px';
+  });
+  viewer.addEventListener('mousemove', (e) => {
+    if (!cropping || !cropStart) return;
+    const rect = viewer.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const overlay = document.getElementById('cropOverlay');
+    overlay.style.left = Math.min(cropStart.x, x) + 'px';
+    overlay.style.top = Math.min(cropStart.y, y) + 'px';
+    overlay.style.width = Math.abs(x - cropStart.x) + 'px';
+    overlay.style.height = Math.abs(y - cropStart.y) + 'px';
+  });
+  viewer.addEventListener('mouseup', (e) => {
+    if (!cropping || !cropStart) return;
+    const rect = viewer.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    cropStart = null;
+    cropping = false;
+    document.getElementById('imageViewer').style.cursor = 'default';
+    showToast('Crop region selected — export to apply');
+  });
+});
+
+// -- Live preview polling --
+function toggleAutoUpdate() {
+  const btn = document.getElementById('btnLive');
+  if (autoUpdateInterval) {
+    clearInterval(autoUpdateInterval);
+    autoUpdateInterval = null;
+    btn.textContent = 'Live preview: OFF';
+    btn.classList.remove('btn-warning');
+    showToast('Live preview stopped');
+  } else {
+    autoUpdateInterval = setInterval(loadPreview, 3000);
+    btn.textContent = 'Live preview: ON';
+    btn.classList.add('btn-warning');
+    showToast('Live preview: updating every 3s');
+  }
+}
+
+// -- Export --
+async function exportImage(format, includeFooter) {
+  const data = collectRecord();
+  data.format = format;
+  data.include_footer = includeFooter;
+  data.metadata = data;
+  try {
+    const resp = await fetch('/api/image/export', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
+    });
+    if (!resp.ok) throw new Error('Export failed');
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (data.scan_name || 'export') + '.' + (format === 'tiff' ? 'tif' : 'png');
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Exported ' + format.toUpperCase());
+  } catch(e) { showToast('Export error: ' + e.message, true); }
+}
+
+// -- Lanes --
+function addLane(name='', treatment='', ug='') {
+  laneCount++;
+  const tbody = document.getElementById('laneBody');
+  const tr = document.createElement('tr');
+  tr.id = `lane-${laneCount}`;
+  tr.innerHTML = `<td class="lane-num">${laneCount}</td><td><input type="text" class="lane-name" value="${name}" placeholder="Sample"></td><td><input type="text" class="lane-treatment" value="${treatment}" placeholder="Condition"></td><td><input type="number" class="lane-ug" value="${ug}" placeholder="ug" style="width:44px"></td><td><button class="btn btn-small btn-secondary" onclick="this.closest('tr').remove();renumberLanes()" style="padding:1px 5px">x</button></td>`;
+  tbody.appendChild(tr);
+}
+function renumberLanes() {
+  document.querySelectorAll('#laneBody tr').forEach((row,i) => { row.querySelector('.lane-num').textContent = i+1; });
+}
+
+// -- Collect form data --
+function collectRecord() {
+  const lanes = [];
+  document.querySelectorAll('#laneBody tr').forEach((row, i) => {
+    lanes.push({
+      lane: i+1, name: row.querySelector('.lane-name')?.value || '',
+      treatment: row.querySelector('.lane-treatment')?.value || '',
+      loading_ug: parseFloat(row.querySelector('.lane-ug')?.value) || null,
+      is_ladder: (row.querySelector('.lane-name')?.value || '').toLowerCase().includes('ladder'),
+    });
+  });
+  return {
+    operator: document.getElementById('operator').value,
+    project: document.getElementById('project').value,
+    experiment_id: document.getElementById('experimentId').value,
+    protocol_ref: document.getElementById('protocolRef').value,
+    scan_name: document.getElementById('scanName').value,
+    scan_group: document.getElementById('scanGroup').value,
+    scan_settings: {
+      resolution_um: parseInt(document.getElementById('resolution').value),
+      quality: document.getElementById('quality').value,
+      intensity_700: parseFloat(document.getElementById('intensity700').value),
+      intensity_800: parseFloat(document.getElementById('intensity800').value),
+      channel_700: true, channel_800: true,
+      origin_x: 0, origin_y: 0,
+      width_cm: parseInt(document.getElementById('width').value),
+      height_cm: parseInt(document.getElementById('height').value),
+      focus_offset_mm: parseFloat(document.getElementById('focusOffset').value),
+    },
+    membrane_type: document.getElementById('membraneType').value,
+    gel_type: document.getElementById('gelType').value,
+    transfer_method: document.getElementById('transferMethod').value,
+    blocking: { buffer: document.getElementById('blockingBuffer').value, duration: document.getElementById('blockingDuration').value },
+    primary_antibodies: [
+      { target: document.getElementById('p700Target').value, host: document.getElementById('p700Host').value, clonality: document.getElementById('p700Clonality').value, vendor: document.getElementById('p700Vendor').value, catalog: document.getElementById('p700Catalog').value, lot: document.getElementById('p700Lot').value, rrid: document.getElementById('p700Rrid').value, dilution: document.getElementById('p700Dilution').value, channel: 700, incubation: document.getElementById('p700Incubation').value },
+      { target: document.getElementById('p800Target').value, host: document.getElementById('p800Host').value, clonality: document.getElementById('p800Clonality').value, vendor: document.getElementById('p800Vendor').value, catalog: document.getElementById('p800Catalog').value, lot: document.getElementById('p800Lot').value, rrid: document.getElementById('p800Rrid').value, dilution: document.getElementById('p800Dilution').value, channel: 800, incubation: document.getElementById('p800Incubation').value },
+    ],
+    secondary_antibodies: [
+      { dye: document.getElementById('s700Dye').value, dilution: document.getElementById('s700Dilution').value, channel: 700 },
+      { dye: document.getElementById('s800Dye').value, dilution: document.getElementById('s800Dilution').value, channel: 800 },
+    ],
+    samples: lanes,
+    notes: document.getElementById('notes').value,
+  };
+}
+
+// -- Save/Load --
+async function saveRecord() {
+  const data = collectRecord();
+  try {
+    const resp = await fetch('/api/record', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
+    });
+    const result = await resp.json();
+    if (result.status === 'ok') showToast('Saved: ' + result.filename);
+    else showToast('Error: ' + (result.detail || 'Unknown'), true);
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function loadRecords() {
+  try {
+    const resp = await fetch('/api/records');
+    const records = await resp.json();
+    if (records.length === 0) { showToast('No saved records'); return; }
+    let msg = 'Recent records:\n';
+    records.slice(0, 10).forEach(r => { msg += `${r.filename} — ${r.scan_name} (${r.operator})\n`; });
+    alert(msg);
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+// -- Toast --
+function showToast(msg, isError) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
+// -- Init --
+async function init() {
+  addLane('Ladder', '', '');
+  addLane('', '', '');
+  addLane('', '', '');
+  addLane('', '', '');
+
+  // Check connection mode
+  try {
+    const resp = await fetch('/api/connection');
+    const info = await resp.json();
+    const badge = document.getElementById('connBadge');
+    if (info.mode === 'real') {
+      badge.textContent = 'connected';
+      badge.classList.add('real');
+    } else {
+      badge.textContent = 'simulated';
+    }
+  } catch(e) {}
+
+  connectWS();
+}
+
+init();
+</script>
+</body>
+</html>
