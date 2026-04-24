@@ -752,10 +752,18 @@ function applyScanSession() {
 }
 
 function buttonStatesFor(state) {
-  // Matrix from data-model.md §1. True = enabled.
+  // Button-state projection. True = enabled.
+  //
+  // Configure is allowed whenever the instrument is NOT actively busy
+  // (Initializing / Scanning / Paused). That includes the Configured
+  // state itself — re-clicking Configure with new form values is a
+  // legitimate action: the user may have refined antibodies or
+  // intensities after the first Configure and wants to re-send. The
+  // instrument accepts a fresh config.pl call from Configured without
+  // harm.
   switch (state) {
     case 'Idle':         return { scan: true,  start: false, pause: false, stop: false, cancel: false };
-    case 'Configured':   return { scan: false, start: true,  pause: false, stop: false, cancel: true };
+    case 'Configured':   return { scan: true,  start: true,  pause: false, stop: false, cancel: true };
     case 'Initializing': return { scan: false, start: false, pause: false, stop: false, cancel: true };
     case 'Scanning':     return { scan: false, start: false, pause: true,  stop: true,  cancel: true };
     case 'Paused':       return { scan: false, start: true,  pause: false, stop: true,  cancel: true };
