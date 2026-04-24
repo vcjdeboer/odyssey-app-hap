@@ -812,6 +812,139 @@ async def list_records():
     return records
 
 
+@app.get("/api/project/export")
+async def export_project(project: str):
+    """Bundle every record + image for a project into a downloadable ZIP.
+
+    Archive layout::
+
+        <project>/
+          README.md                       # summary + scan list
+          records/
+            <timestamp>_<scan_name>.json  # each run's metadata
+          scans/
+            <scan_name>-700.tif           # real hardware path
+            <scan_name>-800.tif
+            <scan_name>-700.png           # simulated fallback
+            <scan_name>-800.png
+
+    TIFFs are preferred (real hardware). In simulated mode the driver
+    has no real image storage, so per-channel PNGs rendered from the
+    simulator are included instead.
+    """
+    import zipfile
+    if not project or not project.strip():
+        raise HTTPException(status_code=400, detail="project parameter required")
+    project_clean = project.strip()
+
+    matching: list[tuple[Path, dict]] = []
+    for f in sorted(RECORDS_DIR.glob("*.json"), reverse=True):
+        try:
+            d = json.loads(f.read_text())
+            if (d.get("project") or "").strip().lower() == project_clean.lower():
+                matching.append((f, d))
+        except Exception:
+            continue
+    if not matching:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No records found for project {project_clean!r}",
+        )
+
+    safe_project = "".join(
+        c if c.isalnum() or c in "-_" else "_" for c in project_clean
+    ) or "project"
+    export_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    root = safe_project
+
+    def _readme() -> str:
+        lines = [
+            f"# {project_clean}",
+            "",
+            f"Exported {datetime.now().isoformat(timespec='seconds')} from the Odyssey app.",
+            f"Contains {len(matching)} scan record(s) for project `{project_clean}`.",
+            "",
+            "## Scans (newest first)",
+            "",
+        ]
+        for _, d in matching:
+            s = d.get("scan_settings", {}) or {}
+            settings = [
+                f"{s.get('resolution_um')} µm" if s.get("resolution_um") is not None else None,
+                s.get("quality"),
+                f"700:{s.get('intensity_700')} / 800:{s.get('intensity_800')}"
+                if s.get("intensity_700") is not None else None,
+                f"{s.get('width_cm')}×{s.get('height_cm')} cm"
+                if s.get("width_cm") is not None else None,
+            ]
+            settings_str = " · ".join(str(x) for x in settings if x is not None)
+            lines.append(
+                f"- **{d.get('scan_name', '(unnamed)')}** — "
+                f"{d.get('operator') or 'no operator'} · "
+                f"{d.get('scan_timestamp') or '—'}"
+                + (f"  \n  {settings_str}" if settings_str else "")
+            )
+        lines += ["", "## Layout", "",
+                  "- `records/` — one JSON file per scan with the full metadata.",
+                  "- `scans/`   — instrument TIFFs when available (real hardware)",
+                  "               or rendered PNG previews (simulated mode).",
+                  ""]
+        return "\n".join(lines)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f"{root}/README.md", _readme())
+
+        for f, d in matching:
+            z.writestr(f"{root}/records/{f.name}", f.read_text())
+
+            scan_name = d.get("scan_name") or "unnamed"
+            group = d.get("scan_group") or DEFAULT_GROUP
+            safe_scan = "".join(
+                c if c.isalnum() or c in "-_" else "_" for c in scan_name
+            )
+
+            # Prefer real-hardware TIFFs when we have a backend connection.
+            tiff_wrote = False
+            if (
+                _image_driver and _odyssey_connection
+                and hasattr(_image_driver.backend, "download_channel")
+            ):
+                for ch in (700, 800):
+                    try:
+                        data = await _image_driver.backend.download_channel(
+                            group, scan_name, ch,
+                        )
+                        if data:
+                            z.writestr(f"{root}/scans/{safe_scan}-{ch}.tif", data)
+                            tiff_wrote = True
+                    except Exception as e:
+                        logging.info(
+                            "Export: could not fetch %s/%s-%d: %s",
+                            group, scan_name, ch, e,
+                        )
+
+            if not tiff_wrote:
+                for ch in (700, 800):
+                    try:
+                        png = await _render_single_channel(group, scan_name, ch)
+                        if png:
+                            z.writestr(f"{root}/scans/{safe_scan}-{ch}.png", png)
+                    except Exception as e:
+                        logging.info(
+                            "Export: render fallback failed for %s-%d: %s",
+                            scan_name, ch, e,
+                        )
+
+    buf.seek(0)
+    filename = f"{safe_project}_{export_ts}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/connection")
 async def connection_info():
     """Report connection mode (real vs simulated)."""

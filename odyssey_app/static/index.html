@@ -313,7 +313,19 @@
   /* Right-side scan history column */
   .history {
     background: var(--surface); border-left: 1px solid var(--border);
-    overflow-y: auto; padding: 14px;
+    padding: 14px;
+    display: flex; flex-direction: column;
+    /* height is inherited from .app grid row; list scrolls internally */
+  }
+  .history-list { flex: 1; overflow-y: auto; min-height: 0; }
+  .history-footer {
+    padding-top: 12px; margin-top: 12px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .history-footer .btn { width: 100%; }
+  .history-footer .hint {
+    font-size: 10px; color: var(--text-muted); margin-top: 6px;
+    text-align: center;
   }
   .history-header {
     display: flex; align-items: baseline; justify-content: space-between;
@@ -672,8 +684,13 @@
     <span>Scans in <span id="historyProject" style="color: var(--text);">…</span></span>
     <span class="count" id="historyCount">0</span>
   </div>
-  <div id="historyList">
+  <div class="history-list" id="historyList">
     <div class="history-empty">No scans saved yet for this project.</div>
+  </div>
+  <div class="history-footer">
+    <button class="btn btn-primary" id="btnExportProject" onclick="exportProject()" disabled
+            title="Bundle every scan record and image for the current project into a ZIP file. The ZIP is downloaded to your browser.">Export project ZIP</button>
+    <div class="hint">Bundles records + images for all scans in <span id="exportProjectName">—</span>.</div>
   </div>
 </div>
 </div>
@@ -1760,12 +1777,16 @@ async function refreshHistory() {
   const projEl = document.getElementById('historyProject');
   const listEl = document.getElementById('historyList');
   const countEl = document.getElementById('historyCount');
+  const exportBtn = document.getElementById('btnExportProject');
+  const exportName = document.getElementById('exportProjectName');
 
   projEl.textContent = project || '(no project)';
+  if (exportName) exportName.textContent = project || '—';
 
   if (!project) {
     listEl.innerHTML = '<div class="history-empty">Enter a project name to see history.</div>';
     countEl.textContent = '0';
+    if (exportBtn) exportBtn.disabled = true;
     return;
   }
 
@@ -1777,6 +1798,7 @@ async function refreshHistory() {
       (r.project || '').trim().toLowerCase() === project.toLowerCase()
     );
     countEl.textContent = String(mine.length);
+    if (exportBtn) exportBtn.disabled = mine.length === 0;
     if (mine.length === 0) {
       listEl.innerHTML = '<div class="history-empty">No scans saved yet for this project.</div>';
       return;
@@ -1785,6 +1807,42 @@ async function refreshHistory() {
   } catch (e) {
     listEl.innerHTML = `<div class="history-empty">Could not load history: ${_esc(e.message)}</div>`;
     countEl.textContent = '0';
+    if (exportBtn) exportBtn.disabled = true;
+  }
+}
+
+async function exportProject() {
+  const project = (document.getElementById('project')?.value || '').trim();
+  if (!project) {
+    showToast('Enter a project name first', true);
+    return;
+  }
+  const btn = document.getElementById('btnExportProject');
+  const oldLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Building ZIP…';
+  try {
+    const resp = await fetch(`/api/project/export?project=${encodeURIComponent(project)}`);
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`HTTP ${resp.status} — ${body.slice(0, 160)}`);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    // Prefer the filename the server suggested via Content-Disposition.
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="([^"]+)"/);
+    a.href = url;
+    a.download = match ? match[1] : `${project}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported project ${project}`);
+  } catch (e) {
+    showToast(`Project export failed: ${e.message}`, true);
+  } finally {
+    btn.textContent = oldLabel;
+    btn.disabled = false;
   }
 }
 
