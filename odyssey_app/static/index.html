@@ -359,6 +359,15 @@
   .history-item .time {
     font-size: 10px; color: var(--text-muted); margin-top: 4px;
   }
+  .history-item .attachments {
+    margin-top: 5px; display: flex; flex-wrap: wrap; gap: 3px;
+  }
+  .history-item .att-badge {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.6px;
+    padding: 1px 6px; border-radius: 3px;
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border);
+  }
 
   /* Preview run record — modal overlay */
   .modal-backdrop {
@@ -658,13 +667,13 @@
   </div>
 
   <div class="export-bar">
-    <label>Download image:</label>
-    <button class="btn btn-small btn-secondary" onclick="exportImage('png', true)"
-            title="Download a PNG of the current view with a metadata footer — saves to your browser's Downloads folder">PNG + footer</button>
-    <button class="btn btn-small btn-secondary" onclick="exportImage('png', false)"
-            title="Download a PNG of just the image — saves to your browser's Downloads folder">PNG clean</button>
-    <button class="btn btn-small btn-secondary" onclick="exportImage('tiff', true)"
-            title="Download a TIFF with embedded metadata tags — saves to your browser's Downloads folder">TIFF + metadata</button>
+    <label>Attach to experiment:</label>
+    <button class="btn btn-small btn-secondary" onclick="attachExport('png', true)"
+            title="Render the current view as PNG with a metadata footer and attach it to this scan. Bundled in the experiment ZIP.">PNG + footer</button>
+    <button class="btn btn-small btn-secondary" onclick="attachExport('png', false)"
+            title="Render the current view as a clean PNG (no footer) and attach it to this scan. Bundled in the experiment ZIP.">PNG clean</button>
+    <button class="btn btn-small btn-secondary" onclick="attachExport('tiff', true)"
+            title="Render the current view as TIFF with embedded metadata and attach it to this scan. Bundled in the experiment ZIP.">TIFF + metadata</button>
     <button class="btn btn-small btn-secondary" id="btnLive" onclick="toggleLivePreview()" style="margin-left:auto">Live preview: OFF</button>
   </div>
 
@@ -1484,27 +1493,45 @@ window.addEventListener('beforeunload', () => {
    Export (US3) — flat payload, no circular metadata self-reference (B2 fix).
 ============================================================================ */
 
-async function exportImage(format, includeFooter) {
+async function attachExport(format, includeFooter) {
+  // Attach (not download) an image export to the currently-viewed scan
+  // in this experiment. The server writes the file to
+  // odyssey_app/exports/<experiment_id>/<scan>__<variant>.<ext>, and
+  // Export experiment ZIP bundles every attachment under exports/.
+  const expId = (document.getElementById('experimentId')?.value || '').trim();
+  // Anchor the attachment to whatever scan is currently displayed —
+  // ChannelCache.scan_name is the authoritative "which scan are we
+  // looking at" marker. Fall back to the form scan_name.
+  const scanName = (ChannelCache.scan_name
+                    || document.getElementById('scanName')?.value
+                    || '').trim();
+  if (!expId) {
+    showToast('No experiment ID — reload the page', true);
+    return;
+  }
+  if (!scanName) {
+    showToast('No scan loaded — run a scan first, then attach', true);
+    return;
+  }
+
   const data = collectRecord();
-  // Flat payload per contracts/odyssey-app-http-api.md. Do NOT set
-  // data.metadata = data — that was the B2 circular-JSON bug.
+  data.experiment_id = expId;
+  data.scan_name = scanName;
   data.format = format;
   data.include_footer = includeFooter;
   data.view = ViewerState.active_view || '700';
+
   try {
     const resp = await fetch('/api/image/export', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
     });
-    if (!resp.ok) throw new Error('Export failed: HTTP ' + resp.status);
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = (data.scan_name || 'export') + '.' + (format === 'tiff' ? 'tif' : 'png');
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('Exported ' + format.toUpperCase());
-  } catch (e) { showToast('Export error: ' + e.message, true); }
+    const body = await resp.json();
+    if (!resp.ok) {
+      throw new Error(body.detail || 'HTTP ' + resp.status);
+    }
+    showToast(`Attached to experiment: ${body.filename}`);
+    refreshHistory();  // update per-scan attachment badges
+  } catch (e) { showToast('Attach failed: ' + e.message, true); }
 }
 
 /* ============================================================================
@@ -1901,11 +1928,23 @@ function renderHistoryItem(r) {
   const isActive = r.scan_name === ChannelCache.scan_name;
   const group = r.scan_group || LOCKED_GROUP;
 
+  // Attachment badges: one per attached export file. Keeps visible proof
+  // that a PNG/TIFF was generated for this scan (and will ship in the ZIP).
+  const atts = r.attachments || [];
+  const attHtml = atts.length === 0 ? ''
+    : '<div class="attachments">'
+      + atts.map(fn => {
+          const ext = (fn.split('.').pop() || '').toUpperCase();
+          return `<span class="att-badge" title="${_esc(fn)}">${_esc(ext)}</span>`;
+        }).join('')
+      + '</div>';
+
   return `<div class="history-item${isActive ? ' active' : ''}"
                onclick="loadHistoricalScan('${_esc(r.scan_name)}', '${_esc(group)}')">
     <div class="name">${_esc(r.scan_name || '(unnamed)')}</div>
     <div class="meta">${metaHtml}</div>
     <div class="time">${_esc(time)}${r.operator ? ' · ' + _esc(r.operator) : ''}</div>
+    ${attHtml}
   </div>`;
 }
 

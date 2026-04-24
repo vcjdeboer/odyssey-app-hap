@@ -70,8 +70,27 @@ app = FastAPI(title="Odyssey Western Blot Imager")
 STATIC_DIR = Path(__file__).parent / "static"
 RECORDS_DIR = Path(__file__).parent / "records"
 SCANS_DIR = Path(__file__).parent / "scans"
+EXPORTS_DIR = Path(__file__).parent / "exports"  # per-experiment attachments
 RECORDS_DIR.mkdir(exist_ok=True)
 SCANS_DIR.mkdir(exist_ok=True)
+EXPORTS_DIR.mkdir(exist_ok=True)
+
+
+def _safe(s: str, fallback: str = "x") -> str:
+    """Make a string safe for use as a filesystem segment."""
+    cleaned = "".join(c if c.isalnum() or c in "-_" else "_" for c in (s or ""))
+    return cleaned or fallback
+
+
+def _list_attachments(experiment_id: str, scan_name: str) -> list[str]:
+    """List attachment filenames for a given (experiment_id, scan_name)."""
+    if not experiment_id or not scan_name:
+        return []
+    exp_dir = EXPORTS_DIR / _safe(experiment_id)
+    if not exp_dir.exists():
+        return []
+    prefix = _safe(scan_name) + "__"
+    return sorted(f.name for f in exp_dir.glob(f"{prefix}*"))
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -639,23 +658,33 @@ async def download_tiff(
 
 @app.post("/api/image/export")
 async def export_image(data: dict):
-    """Export the image with display settings and optional metadata footer.
+    """Render an image export and ATTACH it to the current experiment.
 
-    Accepts a FLAT payload (FR-017) — metadata fields live at the top level,
-    not nested under a 'metadata' key. Any 'metadata' key that a legacy
-    client sends is ignored defensively. The 'view' field selects 700 /
-    800 / overlay per the current viewer state.
+    Behaviour changed in Phase 29: previously this returned the rendered
+    bytes as a browser download. Now it writes the file to
+    ``odyssey_app/exports/<experiment_id>/<scan>__<variant>.<ext>`` so
+    the 'Export experiment ZIP' can bundle every attachment alongside
+    the scan records and raw images. The response is a small JSON
+    confirmation, not a blob.
+
+    Required fields: experiment_id, scan_name, format, view.
+    Optional: include_footer. Accepts flat payload (FR-017 — no
+    circular metadata); any legacy nested 'metadata' key is ignored.
     """
     if not PIL_AVAILABLE:
         raise HTTPException(status_code=500, detail="Pillow not installed")
 
-    scan_name = data.get("scan_name", "export")
+    scan_name = (data.get("scan_name") or "").strip()
+    experiment_id = (data.get("experiment_id") or "").strip()
     include_footer = data.get("include_footer", True)
-    format = data.get("format", "png")  # "png" or "tiff"
-    view = data.get("view", "700")  # "700" | "800" | "overlay"
-    # Read metadata fields from the FLAT payload. Accept a nested
-    # "metadata" dict too as a legacy escape hatch, but prefer top-level.
+    format = data.get("format", "png")
+    view = data.get("view", "700")
     metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else data
+
+    if not experiment_id:
+        raise HTTPException(status_code=400, detail="experiment_id is required")
+    if not scan_name:
+        raise HTTPException(status_code=400, detail="scan_name is required")
 
     # TODO: Load real TIFF data from scans directory, apply display settings
     # For now generate a placeholder
@@ -697,19 +726,44 @@ async def export_image(data: dict):
     buf = io.BytesIO()
     if format == "tiff":
         img.save(buf, format="TIFF")
-        media_type = "image/tiff"
         ext = "tif"
     else:
         img.save(buf, format="PNG")
-        media_type = "image/png"
         ext = "png"
-
     buf.seek(0)
-    return Response(
-        content=buf.getvalue(),
-        media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={scan_name}.{ext}"},
-    )
+    blob = buf.getvalue()
+
+    # Variant label: combine format + footer choice + active view so the
+    # user's three intents (PNG+footer / PNG clean / TIFF+metadata) each
+    # land as distinct files under the scan.
+    variant_parts = [view or "view"]
+    if format == "tiff":
+        variant_parts.append("tiff")
+    elif include_footer:
+        variant_parts.append("png-footer")
+    else:
+        variant_parts.append("png-clean")
+    variant = _safe("-".join(variant_parts))
+
+    exp_dir = EXPORTS_DIR / _safe(experiment_id)
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    base = _safe(scan_name) + "__" + variant
+    target = exp_dir / f"{base}.{ext}"
+    # If the same (scan, variant) was exported earlier, disambiguate.
+    counter = 2
+    while target.exists():
+        target = exp_dir / f"{base}_{counter}.{ext}"
+        counter += 1
+    target.write_bytes(blob)
+
+    return {
+        "status": "attached",
+        "experiment_id": experiment_id,
+        "scan_name": scan_name,
+        "filename": target.name,
+        "variant": variant,
+        "bytes": len(blob),
+    }
 
 
 def _generate_placeholder_image():
@@ -807,6 +861,9 @@ async def list_records():
                     "height_cm": s.get("height_cm"),
                     "focus_offset_mm": s.get("focus_offset_mm"),
                 },
+                "attachments": _list_attachments(
+                    d.get("experiment_id", ""), d.get("scan_name", ""),
+                ),
             })
         except Exception:
             continue
@@ -960,6 +1017,18 @@ async def _export_records_matching(
                             "Export: render fallback failed for %s-%d: %s",
                             scan_name, ch, e,
                         )
+
+            # Bundle any per-scan attachments (PNG/TIFF exports the user
+            # has attached via /api/image/export).
+            exp_id_for_scan = d.get("experiment_id", "")
+            exp_dir = EXPORTS_DIR / _safe(exp_id_for_scan) if exp_id_for_scan else None
+            if exp_dir and exp_dir.exists():
+                prefix = _safe(scan_name) + "__"
+                for att in sorted(exp_dir.glob(f"{prefix}*")):
+                    z.writestr(
+                        f"{root}/exports/{att.name}",
+                        att.read_bytes(),
+                    )
 
     buf.seek(0)
     filename = f"{safe}_{export_ts}.zip"
