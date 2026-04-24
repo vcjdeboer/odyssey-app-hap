@@ -105,6 +105,37 @@
 
   .main { display: flex; flex-direction: column; padding: 12px; gap: 10px; }
 
+  /* Prominent identity row — Project / Scan name shown large so the user
+     always knows which run they're configuring (feedback 2026-04-24). */
+  .identity-row {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 14px; display: flex; align-items: center; gap: 12px;
+  }
+  .identity-row .id-pair {
+    display: flex; align-items: baseline; gap: 8px; flex: 1;
+    font-size: 18px; font-weight: 600; letter-spacing: 0.3px;
+  }
+  .identity-row .id-pair .slash { color: var(--text-dim); font-weight: 300; font-size: 20px; }
+  .identity-row .id-field {
+    background: transparent; border: none; border-bottom: 1px dashed var(--border);
+    color: var(--text); font-size: 18px; font-weight: 600; font-family: inherit;
+    padding: 2px 4px; min-width: 120px;
+  }
+  .identity-row .id-field:focus { outline: none; border-bottom-color: var(--accent2); }
+  .identity-row .id-field::placeholder { color: var(--text-dim); font-weight: 400; font-style: italic; }
+  .identity-row .id-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1.2px; }
+
+  /* Location hints strip — tells the user where records + exports live. */
+  .location-strip {
+    font-size: 10px; color: var(--text-dim); padding: 6px 14px;
+    display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
+    border-top: 1px dashed var(--border);
+  }
+  .location-strip code {
+    background: var(--input-bg); padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; color: var(--text);
+  }
+
   .scan-controls {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 10px 14px; display: flex; align-items: center; gap: 10px;
@@ -208,7 +239,10 @@
       <div class="field"><label>800 nm intensity</label><input type="number" id="intensity800" value="5" min="0.5" max="10" step="0.5"></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"></div>
+      <!-- Scan name is also mirrored in the prominent identity row at the -->
+      <!-- top of the main pane. Both inputs stay in sync via syncIdentity(). -->
+      <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"
+             oninput="syncIdentity('scanName')"></div>
       <div class="field"><label>Group (locked, FR-018)</label>
         <span class="locked-field" id="scanGroupLabel">odyssey</span>
         <input type="hidden" id="scanGroup" value="odyssey">
@@ -220,12 +254,13 @@
     </div>
   </div>
 
-  <!-- Experiment -->
+  <!-- Experiment — Project is mirrored in the identity row at the top. -->
   <div class="section">
     <div class="section-title">Experiment</div>
     <div class="form-row">
       <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="Name"></div>
-      <div class="field"><label>Project</label><input type="text" id="project" placeholder="Project ID"></div>
+      <div class="field"><label>Project</label><input type="text" id="project" placeholder="Project ID"
+             oninput="syncIdentity('project')"></div>
     </div>
     <div class="form-row">
       <div class="field"><label>Experiment ID</label><input type="text" id="experimentId" placeholder="WB-2026-042"></div>
@@ -323,13 +358,27 @@
   </div>
 
   <div class="btn-row">
-    <button class="btn btn-primary" onclick="saveRecord()" style="flex:1">Save Package</button>
+    <button class="btn btn-primary" onclick="saveRecord()" style="flex:1"
+            title="Save the scan metadata (operator, antibodies, lanes, notes) as a JSON record on the server">Save run record</button>
     <button class="btn btn-secondary" onclick="loadRecords()">History</button>
   </div>
 </div>
 
 <!-- ==================== MAIN ==================== -->
 <div class="main">
+  <!-- Identity row: Project / Scan name are prominent at the top. Edits
+       here drive the same fields used in the saved metadata record. -->
+  <div class="identity-row">
+    <div class="id-pair">
+      <span class="id-label">Run</span>
+      <input type="text" class="id-field" id="projectHeader" placeholder="project"
+             oninput="syncIdentity('project')">
+      <span class="slash">/</span>
+      <input type="text" class="id-field" id="scanNameHeader" placeholder="scan name"
+             oninput="syncIdentity('scanName')">
+    </div>
+  </div>
+
   <div class="scan-controls">
     <button class="btn btn-success" id="btnScan" onclick="configureScan()">Scan</button>
     <button class="btn btn-primary" id="btnStart" onclick="startScan()" disabled>Start</button>
@@ -377,11 +426,23 @@
   </div>
 
   <div class="export-bar">
-    <label>Export:</label>
-    <button class="btn btn-small btn-secondary" onclick="exportImage('png', true)">PNG + footer</button>
-    <button class="btn btn-small btn-secondary" onclick="exportImage('png', false)">PNG clean</button>
-    <button class="btn btn-small btn-secondary" onclick="exportImage('tiff', true)">TIFF + metadata</button>
+    <label>Download image:</label>
+    <button class="btn btn-small btn-secondary" onclick="exportImage('png', true)"
+            title="Download a PNG of the current view with a metadata footer — saves to your browser's Downloads folder">PNG + footer</button>
+    <button class="btn btn-small btn-secondary" onclick="exportImage('png', false)"
+            title="Download a PNG of just the image — saves to your browser's Downloads folder">PNG clean</button>
+    <button class="btn btn-small btn-secondary" onclick="exportImage('tiff', true)"
+            title="Download a TIFF with embedded metadata tags — saves to your browser's Downloads folder">TIFF + metadata</button>
     <button class="btn btn-small btn-secondary" id="btnLive" onclick="toggleLivePreview()" style="margin-left:auto">Live preview: OFF</button>
+  </div>
+
+  <!-- Location hints strip — clarifies where the different "save" paths write.
+       records/ and scans/ are on the lab computer; downloads land in your
+       browser's Downloads folder. -->
+  <div class="location-strip">
+    <span><b>Save run record</b> writes to <code>odyssey_app/records/</code> on the lab computer</span>
+    <span><b>Scan images</b> from the instrument land in <code>odyssey_app/scans/</code></span>
+    <span><b>Download PNG / TIFF</b> goes to your browser's Downloads folder</span>
   </div>
 </div>
 </div>
@@ -1003,6 +1064,31 @@ async function exportImage(format, includeFooter) {
     URL.revokeObjectURL(url);
     showToast('Exported ' + format.toUpperCase());
   } catch (e) { showToast('Export error: ' + e.message, true); }
+}
+
+/* ============================================================================
+   Identity sync — keep the prominent header row and the sidebar fields in
+   lock-step. Either one can be edited; both stay the single source of truth.
+============================================================================ */
+
+function syncIdentity(which) {
+  // ``which`` is the id of the element the user just edited; copy its value
+  // to the twin in the other location.
+  const pairs = {
+    project:       ['project', 'projectHeader'],
+    projectHeader: ['project', 'projectHeader'],
+    scanName:      ['scanName', 'scanNameHeader'],
+    scanNameHeader:['scanName', 'scanNameHeader'],
+  };
+  const pair = pairs[which];
+  if (!pair) return;
+  const source = document.activeElement && document.activeElement.id === pair[0]
+    ? pair[0]
+    : (document.activeElement && document.activeElement.id === pair[1] ? pair[1] : pair[0]);
+  const twin = source === pair[0] ? pair[1] : pair[0];
+  const val = document.getElementById(source).value;
+  const other = document.getElementById(twin);
+  if (other.value !== val) other.value = val;
 }
 
 /* ============================================================================

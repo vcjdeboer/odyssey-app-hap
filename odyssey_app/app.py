@@ -264,6 +264,8 @@ async def configure_scan(data: dict):
             await _scan_driver.configure(params)
 
         _scan_state["state"] = "Configured"
+        _scan_state["progress"] = 0  # reset from any previous scan's 100%
+        _scan_state["time_remaining"] = ""
         _scan_state["current_scan"] = params.name
         _scan_state["current_group"] = params.group
         await _broadcast({"type": "status", **_scan_state})
@@ -294,31 +296,73 @@ async def _emit_scan_complete(outcome: str) -> None:
 
 @app.post("/api/scan/start")
 async def start_scan():
-    """Start a configured scan."""
+    """Start a configured scan.
+
+    Broadcasts Scanning/0% BEFORE launching the driver so the progress bar
+    resets immediately and doesn't show the previous scan's 100% during
+    the new run. Both sim and real modes run as background tasks so the
+    HTTP response returns promptly.
+    """
     global _scan_state
     try:
-        if _scan_driver:
-            await _scan_driver.start()
-
+        # Immediate visible reset — before any blocking await.
         _scan_state["state"] = "Scanning"
         _scan_state["progress"] = 0
+        _scan_state["time_remaining"] = ""
         await _broadcast({"type": "status", **_scan_state})
 
         if _sim_state is not None:
-            # Simulated: the simulator's start() has already run the scan
-            # synchronously (ticks with asyncio.sleep(0.05)). Reflect the
-            # Completed state in the broadcast.
-            _scan_state["state"] = "Completed"
-            _scan_state["progress"] = 100
-            await _broadcast({"type": "status", **_scan_state})
-            await _emit_scan_complete("completed")
+            asyncio.create_task(_run_sim_scan())
         elif _status_driver and _odyssey_connection:
-            # Real instrument: poll for completion in background.
+            # Real: fire the start command, then poll for progress.
+            await _scan_driver.start()
             asyncio.create_task(_poll_scan_progress())
 
         return {"status": "ok", "message": "Scan started"}
     except Exception as e:
+        _scan_state["state"] = "Failed"
+        await _broadcast({"type": "status", **_scan_state})
         raise HTTPException(status_code=400, detail=str(e))
+
+
+async def _run_sim_scan():
+    """Run the simulated scan and broadcast progress every 100 ms.
+
+    Runs the sim's start() as a background coroutine while this loop
+    polls the sim status and broadcasts. When the sim reaches a terminal
+    state, emits exactly one scan_complete.
+    """
+    global _scan_state
+    sim_task = asyncio.create_task(_scan_driver.start())
+    try:
+        while not sim_task.done():
+            try:
+                status = await _status_driver.read()
+                _scan_state["state"] = normalize_state(status.state)
+                _scan_state["progress"] = status.progress
+                await _broadcast({"type": "status", **_scan_state})
+            except Exception as e:
+                logging.warning("Sim poll error: %s", e)
+            await asyncio.sleep(0.1)
+        # Drain any exception from sim_task and pick up the final state.
+        try:
+            await sim_task
+        except Exception as e:
+            logging.error("Sim scan failed: %s", e)
+            _scan_state["state"] = "Failed"
+            await _broadcast({"type": "status", **_scan_state})
+            await _emit_scan_complete("failed")
+            return
+        final = await _status_driver.read()
+        _scan_state["state"] = normalize_state(final.state)
+        _scan_state["progress"] = final.progress
+        await _broadcast({"type": "status", **_scan_state})
+        await _emit_scan_complete(_scan_state["state"])
+    except Exception as e:
+        logging.error("Unexpected error in _run_sim_scan: %s", e, exc_info=True)
+        _scan_state["state"] = "Failed"
+        await _broadcast({"type": "status", **_scan_state})
+        await _emit_scan_complete("failed")
 
 
 async def _poll_scan_progress():
