@@ -17,20 +17,27 @@
 <title>Odyssey Western Blot Imager</title>
 <style>
   :root {
-    --bg: #1a1a2e;
-    --surface: #16213e;
-    --surface2: #0f3460;
-    --accent: #e94560;
-    --accent2: #00b4d8;
-    --text: #eee;
-    --text-dim: #999;
-    --border: #2a2a4a;
-    --ch700: #ff4444;
-    --ch800: #44cc44;
-    --overlay: #bb99ff;
-    --input-bg: #1e2a45;
-    --success: #4caf50;
-    --warning: #ff9800;
+    /* Palette rebalanced 2026-04-24 — old #999 dim text failed WCAG on the
+       dark surfaces. New --text-dim hits ~7:1 contrast; --text-muted is
+       reserved for tertiary copy (location strip, caption labels). */
+    --bg: #0f172a;
+    --surface: #1b2740;
+    --surface-raised: #243352;   /* used by the primary Scan Settings card */
+    --surface2: #12325a;
+    --accent: #ff5c7e;           /* primary action color (Scan, section titles) */
+    --accent2: #5dd6ff;           /* info/secondary accent (Scan Settings border, focus) */
+    --text: #f2f4fa;
+    --text-dim: #c4cfe1;          /* for field labels, status — readable on dark */
+    --text-muted: #8898b5;        /* only for very tertiary copy */
+    --border: #3a4a72;
+    --border-soft: #283a60;
+    --ch700: #ff5a5a;
+    --ch800: #58e07a;
+    --overlay: #c7a6ff;
+    --input-bg: #1a2540;
+    --success: #45c46e;
+    --warning: #ffaa33;
+    --danger: #e5484d;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -56,10 +63,26 @@
   .app { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 48px); }
 
   .sidebar { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; padding: 14px; }
-  .section { margin-bottom: 16px; }
+  .section { margin-bottom: 18px; }
   .section-title {
     font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px;
-    color: var(--accent); margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border);
+    color: var(--text-dim); margin-bottom: 8px; padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  /* Scan Settings is the operationally critical section — give it a raised
+     card look so it stands out from Experiment / Sample Prep / Antibodies. */
+  .section.primary {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent2);
+    border-radius: 8px;
+    padding: 12px 12px 4px 12px;
+    margin-bottom: 22px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  }
+  .section.primary .section-title {
+    color: var(--accent2); font-size: 12px; font-weight: 800; letter-spacing: 1.8px;
+    border-bottom: 1px solid var(--border);
   }
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 8px; }
   .form-row.full { grid-template-columns: 1fr; }
@@ -129,10 +152,11 @@
 
   /* Location hints strip — tells the user where records + exports live. */
   .location-strip {
-    font-size: 10px; color: var(--text-dim); padding: 6px 14px;
+    font-size: 10px; color: var(--text-muted); padding: 6px 14px;
     display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
-    border-top: 1px dashed var(--border);
+    border-top: 1px dashed var(--border-soft);
   }
+  .location-strip b { color: var(--text-dim); font-weight: 600; }
   .location-strip code {
     background: var(--input-bg); padding: 1px 6px; border-radius: 3px;
     font-size: 10px; color: var(--text);
@@ -224,8 +248,8 @@
 <div class="app">
 <div class="sidebar">
 
-  <!-- Scan Settings — moved to top per FR-020. -->
-  <div class="section">
+  <!-- Scan Settings — moved to top per FR-020, styled as .primary card. -->
+  <div class="section primary">
     <div class="section-title">Scan Settings</div>
     <div class="form-row triple">
       <div class="field"><label>Resolution</label>
