@@ -359,32 +359,34 @@
       <div class="field"><label>800 nm intensity</label><input type="number" id="intensity800" value="5" min="0.5" max="10" step="0.5"></div>
     </div>
     <div class="form-row">
-      <!-- Scan name is also mirrored in the prominent identity row at the -->
-      <!-- top of the main pane. Both inputs stay in sync via syncIdentity(). -->
-      <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"
-             oninput="syncIdentity('scanName')" required></div>
+      <div class="field"><label>Width (cm)</label><input type="number" id="width" value="10" min="1" max="25"></div>
+      <div class="field"><label>Height (cm)</label><input type="number" id="height" value="10" min="1" max="25"></div>
+    </div>
+    <div class="form-row full">
       <div class="field"><label>Group (locked, FR-018)</label>
         <span class="locked-field" id="scanGroupLabel">odyssey</span>
         <input type="hidden" id="scanGroup" value="odyssey">
       </div>
     </div>
-    <div class="form-row">
-      <div class="field"><label>Width (cm)</label><input type="number" id="width" value="10" min="1" max="25"></div>
-      <div class="field"><label>Height (cm)</label><input type="number" id="height" value="10" min="1" max="25"></div>
-    </div>
   </div>
 
-  <!-- Experiment — Project is mirrored in the identity row at the top. -->
+  <!-- Experiment — identity metadata. Project + Scan name are mirrored -->
+  <!-- in the prominent identity row at the top of the main pane. -->
+  <!-- Experiment ID is auto-stamped on page load and not editable. -->
   <div class="section">
     <div class="section-title">Experiment</div>
     <div class="form-row">
-      <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="Name"></div>
       <div class="field"><label>Project</label><input type="text" id="project" placeholder="VB20260424"
              oninput="syncIdentity('project')"></div>
+      <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"
+             oninput="syncIdentity('scanName')" required></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Experiment ID</label><input type="text" id="experimentId" placeholder="WB-2026-042"></div>
-      <div class="field"><label>Protocol ref</label><input type="text" id="protocolRef" placeholder="DOI or local ID"></div>
+      <div class="field"><label>Experiment ID (auto-stamped)</label>
+        <span class="locked-field" id="experimentIdLabel">—</span>
+        <input type="hidden" id="experimentId" value="">
+      </div>
+      <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="Name"></div>
     </div>
   </div>
 
@@ -1289,7 +1291,6 @@ function collectRecord() {
     operator: document.getElementById('operator').value,
     project: document.getElementById('project').value,
     experiment_id: document.getElementById('experimentId').value,
-    protocol_ref: document.getElementById('protocolRef').value,
     scan_name: document.getElementById('scanName').value,
     scan_group: LOCKED_GROUP,  // FR-018: always "odyssey", UI has no escape hatch
     scan_settings: {
@@ -1348,6 +1349,23 @@ async function loadRecords() {
 }
 
 /* ============================================================================
+   Experiment ID stamp — auto-generated on page load.
+   Format: EXP-YYYYMMDD-HHMMSS. Read-only so every saved record carries a
+   stable, unambiguous identifier derived from wall-clock time.
+============================================================================ */
+
+function stampExperimentId() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const id = `EXP-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-`
+           + `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const label = document.getElementById('experimentIdLabel');
+  const hidden = document.getElementById('experimentId');
+  if (label) label.textContent = id;
+  if (hidden) hidden.value = id;
+}
+
+/* ============================================================================
    Theme selector (persisted in localStorage)
 ============================================================================ */
 
@@ -1390,6 +1408,7 @@ function showToast(msg, isError) {
 
 async function init() {
   initTheme();  // before anything else so the first paint is in the right palette
+  stampExperimentId();
   addLane('Ladder', '', '');
   addLane('', '', '');
   addLane('', '', '');
