@@ -540,7 +540,8 @@
     <button class="btn btn-small btn-secondary" onclick="resetZoomOnly()"
             title="Reset zoom and pan to fit-to-viewer (leaves brightness/contrast alone)">100%</button>
     <button class="btn btn-small btn-secondary" onclick="zoomBy(1.25)" title="Zoom in">+</button>
-    <button class="btn btn-small btn-secondary" onclick="startCrop()">Crop</button>
+    <button class="btn btn-small btn-secondary" onclick="startCrop()"
+            title="Draw a rectangle to mark the region used when you Download PNG / TIFF. Does not modify the on-screen image.">Select export region</button>
   </div>
 
   <div class="image-viewer" id="imageViewer">
@@ -1125,10 +1126,13 @@ let cropping = false;
 let cropStart = null;
 
 function startCrop() {
+  // Name kept for compatibility; this tool marks a region for Export,
+  // it does NOT alter the on-screen image. Button label is
+  // "Select export region".
   cropping = !cropping;
   const canvas = document.getElementById('imageCanvas');
   if (cropping) {
-    showToast('Click and drag on the image to crop (zoom/pan disabled)');
+    showToast('Click and drag to mark the region used by Download PNG / TIFF (zoom/pan disabled)');
     canvas.classList.add('cropping');
   } else {
     canvas.classList.remove('cropping');
@@ -1165,7 +1169,7 @@ document.addEventListener('DOMContentLoaded', () => {
     cropStart = null;
     cropping = false;
     viewer.style.cursor = 'default';
-    showToast('Crop region selected — export to apply');
+    showToast('Region marked — it will be used when you Download PNG / TIFF');
   });
 });
 
