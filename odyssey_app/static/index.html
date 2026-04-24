@@ -900,17 +900,32 @@ function validateRunRecord(data) {
 }
 
 /* Uniquify a scan name against the set of names already saved for the
- * current project. If `base` is not in `existing`, returns it unchanged.
- * Otherwise appends `_2`, `_3`, … until it no longer collides. */
+ * current project. If `base` is not in `existing`, returns unchanged.
+ *
+ * Otherwise it parses any trailing "_<digits>" on the base and
+ * increments that counter. This means re-clicking Configure on an
+ * already-uniquified name goes 'western_01_2' → '_3' → '_4', instead
+ * of the buggy '_2' → '_2_2' → '_2_2_2' the naive append produced.
+ *
+ * Edge case: if the user's original name happens to end in '_NN'
+ * (e.g., 'western_01'), the first collision suggests 'western_2' —
+ * the "_01" is treated as a suffix. The prompt dialog lets the user
+ * cancel and pick their own name if that's not what they wanted.
+ */
 function uniquifyScanName(base, existing) {
   base = (base || '').trim();
   const existingSet = new Set(existing.map(n => (n || '').trim()));
   if (!existingSet.has(base)) return base;
-  for (let i = 2; i < 1000; i++) {
-    const candidate = `${base}_${i}`;
+
+  const m = base.match(/^(.+)_(\d+)$/);
+  const stem = m ? m[1] : base;
+  const startN = m ? parseInt(m[2], 10) + 1 : 2;
+
+  for (let i = startN; i < 10000; i++) {
+    const candidate = `${stem}_${i}`;
     if (!existingSet.has(candidate)) return candidate;
   }
-  return `${base}_${Date.now()}`;  // pathological fallback
+  return `${stem}_${Date.now()}`;  // pathological fallback
 }
 
 async function configureScan() {
