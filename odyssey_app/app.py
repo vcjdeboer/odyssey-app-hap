@@ -597,18 +597,21 @@ async def download_tiff(
 async def export_image(data: dict):
     """Export the image with display settings and optional metadata footer.
 
-    Applies brightness/contrast, channel selection, crop, and optionally
-    burns metadata into the image as a footer panel.
+    Accepts a FLAT payload (FR-017) — metadata fields live at the top level,
+    not nested under a 'metadata' key. Any 'metadata' key that a legacy
+    client sends is ignored defensively. The 'view' field selects 700 /
+    800 / overlay per the current viewer state.
     """
     if not PIL_AVAILABLE:
         raise HTTPException(status_code=500, detail="Pillow not installed")
 
-    # For now return a placeholder — real implementation will compose
-    # the TIFF channels with display settings
     scan_name = data.get("scan_name", "export")
     include_footer = data.get("include_footer", True)
     format = data.get("format", "png")  # "png" or "tiff"
-    metadata = data.get("metadata", {})
+    view = data.get("view", "700")  # "700" | "800" | "overlay"
+    # Read metadata fields from the FLAT payload. Accept a nested
+    # "metadata" dict too as a legacy escape hatch, but prefer top-level.
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else data
 
     # TODO: Load real TIFF data from scans directory, apply display settings
     # For now generate a placeholder

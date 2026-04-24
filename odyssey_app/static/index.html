@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  Odyssey Western Blot Imager GUI — feature 022 rewrite
+  See specs/022-odyssey-app-lab-fixes/ in the plr_spec repo.
+
+  State model (data-model.md §1):
+    Idle → Configured → Initializing → Scanning → {Completed|Stopped|Failed} → Idle
+
+  Defaults per specs/022-odyssey-app-lab-fixes clarification Q1 (2026-04-24):
+    resolution=169 µm, quality=Medium, focus=0.0, 700/800 intensity=5,
+    width=10 cm, height=10 cm. Group locked to "odyssey" (FR-018, FR-026).
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -16,6 +27,7 @@
     --border: #2a2a4a;
     --ch700: #ff4444;
     --ch800: #44cc44;
+    --overlay: #bb99ff;
     --input-bg: #1e2a45;
     --success: #4caf50;
     --warning: #ff9800;
@@ -36,6 +48,7 @@
   .status-dot.scanning { background: var(--accent); animation: pulse 1s infinite; }
   .status-dot.paused { background: var(--warning); }
   .status-dot.disconnected { background: #666; }
+  .status-dot.failed { background: #b00; }
   @keyframes pulse { 50% { opacity: 0.5; } }
   .conn-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--surface2); }
   .conn-badge.real { background: var(--success); color: #000; }
@@ -58,6 +71,12 @@
   }
   .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--accent2); }
   .field textarea { resize: vertical; min-height: 36px; }
+  .locked-field {
+    display: inline-block; padding: 5px 7px; background: var(--input-bg);
+    border: 1px dashed var(--border); border-radius: 4px; color: var(--text-dim);
+    font-size: 12px; width: 100%; font-family: inherit;
+  }
+  .locked-field::after { content: " 🔒"; font-size: 10px; opacity: 0.5; }
 
   .ab-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
   .ab-card.ch700 { border-left: 3px solid var(--ch700); }
@@ -75,7 +94,7 @@
   .lane-num { width: 24px; text-align: center; color: var(--text-dim); font-weight: 700; font-size: 10px; }
 
   .btn { padding: 7px 14px; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
-  .btn:hover { filter: brightness(1.15); }
+  .btn:hover:not(:disabled) { filter: brightness(1.15); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-primary { background: var(--accent); color: #fff; }
   .btn-success { background: var(--success); color: #fff; }
@@ -93,7 +112,7 @@
   .scan-controls .btn { min-width: 70px; }
   .progress-bar { flex: 1; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; }
   .progress-fill { height: 100%; background: var(--accent2); width: 0%; transition: width 0.3s; }
-  .scan-status-text { font-size: 12px; color: var(--text-dim); min-width: 120px; text-align: right; }
+  .scan-status-text { font-size: 12px; color: var(--text-dim); min-width: 140px; text-align: right; }
 
   .image-controls {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
@@ -103,24 +122,36 @@
   .slider-group label { font-size: 10px; color: var(--text-dim); min-width: 55px; }
   .slider-group input[type="range"] { width: 100px; accent-color: var(--accent2); }
   .slider-group .val { font-size: 10px; color: var(--text-dim); min-width: 24px; text-align: right; }
-  .channel-toggles { display: flex; gap: 4px; }
-  .channel-toggle {
-    padding: 4px 10px; border-radius: 4px; font-size: 10px; font-weight: 700;
+  /* Three mutually-exclusive view buttons — 700 / 800 / Overlay (F2). */
+  .view-buttons { display: flex; gap: 4px; }
+  .view-btn {
+    padding: 6px 14px; border-radius: 4px; font-size: 11px; font-weight: 700;
     cursor: pointer; border: 2px solid; background: transparent; transition: all 0.15s;
+    letter-spacing: 0.5px;
   }
-  .channel-toggle.ch700 { border-color: var(--ch700); color: var(--ch700); }
-  .channel-toggle.ch700.active { background: var(--ch700); color: #fff; }
-  .channel-toggle.ch800 { border-color: var(--ch800); color: var(--ch800); }
-  .channel-toggle.ch800.active { background: var(--ch800); color: #fff; }
+  .view-btn.ch700 { border-color: var(--ch700); color: var(--ch700); }
+  .view-btn.ch700.active { background: var(--ch700); color: #fff; }
+  .view-btn.ch800 { border-color: var(--ch800); color: var(--ch800); }
+  .view-btn.ch800.active { background: var(--ch800); color: #000; }
+  .view-btn.overlay { border-color: var(--overlay); color: var(--overlay); }
+  .view-btn.overlay.active { background: var(--overlay); color: #000; }
+  .view-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
   .image-viewer {
     flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     display: flex; align-items: center; justify-content: center; min-height: 300px;
-    position: relative; overflow: hidden; cursor: crosshair;
+    position: relative; overflow: hidden;
   }
-  .image-viewer canvas { max-width: 100%; max-height: 100%; }
+  .image-viewer canvas { background: #000; max-width: 100%; max-height: 100%; cursor: grab; }
+  .image-viewer canvas.dragging { cursor: grabbing; }
+  .image-viewer canvas.cropping { cursor: crosshair; }
   .image-placeholder { text-align: center; color: var(--text-dim); }
   .image-placeholder .icon { font-size: 36px; margin-bottom: 6px; }
+  .view-label {
+    position: absolute; top: 8px; left: 8px; padding: 3px 10px; border-radius: 3px;
+    background: rgba(0, 0, 0, 0.6); color: var(--text); font-size: 11px;
+    font-weight: 700; letter-spacing: 1px; pointer-events: none;
+  }
   .crop-overlay {
     position: absolute; border: 2px dashed var(--accent2); pointer-events: none;
     display: none; background: rgba(0, 180, 216, 0.1);
@@ -155,24 +186,12 @@
 <div class="app">
 <div class="sidebar">
 
-  <!-- Experiment -->
-  <div class="section">
-    <div class="section-title">Experiment</div>
-    <div class="form-row">
-      <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="Name"></div>
-      <div class="field"><label>Project</label><input type="text" id="project" placeholder="Project ID"></div>
-    </div>
-    <div class="form-row">
-      <div class="field"><label>Experiment ID</label><input type="text" id="experimentId" placeholder="WB-2026-042"></div>
-      <div class="field"><label>Protocol ref</label><input type="text" id="protocolRef" placeholder="DOI or local ID"></div>
-    </div>
-  </div>
-
-  <!-- Scan Settings -->
+  <!-- Scan Settings — moved to top per FR-020. -->
   <div class="section">
     <div class="section-title">Scan Settings</div>
     <div class="form-row triple">
       <div class="field"><label>Resolution</label>
+        <!-- Default values per clarification Q1=A; see specs/022-odyssey-app-lab-fixes -->
         <select id="resolution">
           <option value="337">337 um</option><option value="169" selected>169 um</option>
           <option value="84">84 um</option><option value="42">42 um</option><option value="21">21 um</option>
@@ -190,11 +209,27 @@
     </div>
     <div class="form-row">
       <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"></div>
-      <div class="field"><label>Group</label><input type="text" id="scanGroup" value="public"></div>
+      <div class="field"><label>Group (locked, FR-018)</label>
+        <span class="locked-field" id="scanGroupLabel">odyssey</span>
+        <input type="hidden" id="scanGroup" value="odyssey">
+      </div>
     </div>
     <div class="form-row">
       <div class="field"><label>Width (cm)</label><input type="number" id="width" value="10" min="1" max="25"></div>
       <div class="field"><label>Height (cm)</label><input type="number" id="height" value="10" min="1" max="25"></div>
+    </div>
+  </div>
+
+  <!-- Experiment -->
+  <div class="section">
+    <div class="section-title">Experiment</div>
+    <div class="form-row">
+      <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="Name"></div>
+      <div class="field"><label>Project</label><input type="text" id="project" placeholder="Project ID"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Experiment ID</label><input type="text" id="experimentId" placeholder="WB-2026-042"></div>
+      <div class="field"><label>Protocol ref</label><input type="text" id="protocolRef" placeholder="DOI or local ID"></div>
     </div>
   </div>
 
@@ -299,38 +334,44 @@
     <button class="btn btn-success" id="btnScan" onclick="configureScan()">Scan</button>
     <button class="btn btn-primary" id="btnStart" onclick="startScan()" disabled>Start</button>
     <button class="btn btn-secondary" id="btnPause" onclick="pauseScan()" disabled>Pause</button>
-    <button class="btn btn-secondary" id="btnStop" onclick="stopScan()" disabled>Stop</button>
-    <button class="btn btn-secondary" id="btnCancel" onclick="cancelScan()" disabled>Cancel</button>
+    <button class="btn btn-secondary" id="btnStop" onclick="stopScan()" disabled
+            title="Stop the scan and save whatever has been acquired so far">Stop</button>
+    <button class="btn btn-secondary" id="btnCancel" onclick="cancelScan()" disabled
+            title="Cancel the scan and discard all data">Cancel</button>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <span class="scan-status-text" id="scanStatusText">Idle</span>
   </div>
 
   <div class="image-controls">
-    <div class="channel-toggles">
-      <button class="channel-toggle ch700 active" id="toggle700" onclick="toggleChannel(700)">700</button>
-      <button class="channel-toggle ch800 active" id="toggle800" onclick="toggleChannel(800)">800</button>
+    <!-- Three mutually-exclusive view buttons (F2). No active-on-load: the -->
+    <!-- viewer stays blank until a scan completes (FR-009). -->
+    <div class="view-buttons">
+      <button class="view-btn ch700" id="btnView700" data-view="700" disabled>700</button>
+      <button class="view-btn ch800" id="btnView800" data-view="800" disabled>800</button>
+      <button class="view-btn overlay" id="btnViewOverlay" data-view="overlay" disabled>Overlay</button>
     </div>
     <div class="slider-group">
       <label>Brightness</label>
-      <input type="range" id="brightness" min="-100" max="100" value="0" oninput="updateDisplay()">
+      <input type="range" id="brightness" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
       <span class="val" id="brightnessVal">0</span>
     </div>
     <div class="slider-group">
       <label>Contrast</label>
-      <input type="range" id="contrast" min="-100" max="100" value="0" oninput="updateDisplay()">
+      <input type="range" id="contrast" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
       <span class="val" id="contrastVal">0</span>
     </div>
     <button class="btn btn-small btn-secondary" id="btnInvert" onclick="invertImage()">Invert</button>
-    <button class="btn btn-small btn-secondary" onclick="resetDisplay()">Reset</button>
+    <button class="btn btn-small btn-secondary" onclick="resetView()">Reset view</button>
     <button class="btn btn-small btn-secondary" onclick="startCrop()">Crop</button>
   </div>
 
   <div class="image-viewer" id="imageViewer">
     <canvas id="imageCanvas" style="display:none"></canvas>
+    <div class="view-label" id="viewLabel" style="display:none"></div>
     <div class="image-placeholder" id="imagePlaceholder">
       <div class="icon">&#x1F4F7;</div>
       <div>No scan loaded</div>
-      <div style="font-size:11px;margin-top:4px">Run a scan or click Scan to load preview</div>
+      <div style="font-size:11px;margin-top:4px">Run a scan, then click 700 / 800 / Overlay</div>
     </div>
     <div class="crop-overlay" id="cropOverlay"></div>
   </div>
@@ -340,7 +381,7 @@
     <button class="btn btn-small btn-secondary" onclick="exportImage('png', true)">PNG + footer</button>
     <button class="btn btn-small btn-secondary" onclick="exportImage('png', false)">PNG clean</button>
     <button class="btn btn-small btn-secondary" onclick="exportImage('tiff', true)">TIFF + metadata</button>
-    <button class="btn btn-small btn-secondary" id="btnLive" onclick="toggleAutoUpdate()" style="margin-left:auto">Live preview: OFF</button>
+    <button class="btn btn-small btn-secondary" id="btnLive" onclick="toggleLivePreview()" style="margin-left:auto">Live preview: OFF</button>
   </div>
 </div>
 </div>
@@ -348,60 +389,150 @@
 <div class="toast" id="toast"></div>
 
 <script>
-// -- State --
-let laneCount = 0;
-let ws = null;
-let inverted = false;
-let cropping = false;
-let cropStart = null;
-let autoUpdateInterval = null;
-let currentImage = null; // HTMLImageElement
+'use strict';
+/* ============================================================================
+   State model — see data-model.md §1 and §2.
+   ScanSession.state is the ONLY source of truth for button enablement.
+   ChannelCache and ViewerState are browser-local.
+============================================================================ */
 
-// -- WebSocket --
+const TERMINAL_STATES = new Set(['Completed', 'Stopped', 'Failed']);
+const LOCKED_GROUP = 'odyssey';  // FR-018
+
+const ScanSession = {
+  state: 'Idle',
+  scan_name: '',
+  group: LOCKED_GROUP,
+  progress: 0,
+  time_remaining: '',
+  error: null,
+};
+
+const ChannelCache = {
+  scan_name: null,
+  group: null,
+  ch700: null,       // ImageBitmap or null
+  ch800: null,       // ImageBitmap or null
+  fetched_at: null,
+  clear() {
+    if (this.ch700 && typeof this.ch700.close === 'function') this.ch700.close();
+    if (this.ch800 && typeof this.ch800.close === 'function') this.ch800.close();
+    this.ch700 = null;
+    this.ch800 = null;
+    this.scan_name = null;
+    this.group = null;
+    this.fetched_at = null;
+  },
+  hasAny() { return this.ch700 !== null || this.ch800 !== null; },
+};
+
+const ViewerState = {
+  active_view: null,    // "700" | "800" | "overlay" | null
+  scale: 1.0,
+  tx: 0,
+  ty: 0,
+  inverted: false,
+  brightness: 0,
+  contrast: 0,
+};
+
+let ws = null;
+let autoUpdateInterval = null;  // live-preview polling handle (B1)
+let statusSafetyNetInterval = null;  // WS-independent safety-net poller (T013)
+let laneCount = 0;
+
+/* ============================================================================
+   WebSocket
+============================================================================ */
+
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws`);
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    if (msg.type === 'status') updateStatus(msg);
+    if (msg.type === 'status') updateScanSession(msg);
     if (msg.type === 'scan_complete') onScanComplete(msg);
   };
   ws.onclose = () => setTimeout(connectWS, 2000);
 }
 
-function updateStatus(s) {
+/* ============================================================================
+   Scan session state + pure-function button projection
+============================================================================ */
+
+function updateScanSession(msg) {
+  if (msg.state !== undefined) ScanSession.state = msg.state;
+  if (msg.progress !== undefined) ScanSession.progress = msg.progress;
+  if (msg.time_remaining !== undefined) ScanSession.time_remaining = msg.time_remaining;
+  if (msg.current_scan !== undefined) ScanSession.scan_name = msg.current_scan;
+  if (msg.current_group !== undefined) ScanSession.group = msg.current_group;
+  if (msg.error !== undefined) ScanSession.error = msg.error;
+  applyScanSession();
+}
+
+function applyScanSession() {
+  const s = ScanSession.state;
   const dot = document.getElementById('statusDot');
   const text = document.getElementById('scanStatusText');
   const fill = document.getElementById('progressFill');
 
   dot.className = 'status-dot';
-  if (s.state === 'Scanning') dot.classList.add('scanning');
-  if (s.state === 'Paused') dot.classList.add('paused');
-  if (s.state === 'Idle') dot.classList.add('');
+  if (s === 'Scanning' || s === 'Initializing') dot.classList.add('scanning');
+  else if (s === 'Paused') dot.classList.add('paused');
+  else if (s === 'Failed') dot.classList.add('failed');
 
-  text.textContent = s.state + (s.progress > 0 && s.progress < 100 ? ` ${s.progress}%` : '');
-  if (s.time_remaining) text.textContent += ` (${s.time_remaining})`;
-  fill.style.width = s.progress + '%';
+  let label = s;
+  if (s === 'Scanning' && ScanSession.progress > 0 && ScanSession.progress < 100) {
+    label = `${s} ${Math.round(ScanSession.progress)}%`;
+  }
+  if (ScanSession.time_remaining) label += ` (${ScanSession.time_remaining})`;
+  text.textContent = label;
+  fill.style.width = ScanSession.progress + '%';
 
-  // Button states
-  const idle = s.state === 'Idle' || s.state === 'Configured';
-  const scanning = s.state === 'Scanning';
-  const paused = s.state === 'Paused';
-  const configured = s.state === 'Configured';
-
-  document.getElementById('btnScan').disabled = scanning;
-  document.getElementById('btnStart').disabled = !configured && !paused;
-  document.getElementById('btnPause').disabled = !scanning;
-  document.getElementById('btnStop').disabled = idle;
-  document.getElementById('btnCancel').disabled = idle;
+  // Button state: pure function of ScanSession.state (data-model.md §1).
+  const btnStates = buttonStatesFor(s);
+  document.getElementById('btnScan').disabled = !btnStates.scan;
+  document.getElementById('btnStart').disabled = !btnStates.start;
+  document.getElementById('btnPause').disabled = !btnStates.pause;
+  document.getElementById('btnStop').disabled = !btnStates.stop;
+  document.getElementById('btnCancel').disabled = !btnStates.cancel;
 }
 
-function onScanComplete(msg) {
-  showToast('Scan complete: ' + msg.scan);
-  loadPreview();
+function buttonStatesFor(state) {
+  // Matrix from data-model.md §1. True = enabled.
+  switch (state) {
+    case 'Idle':         return { scan: true,  start: false, pause: false, stop: false, cancel: false };
+    case 'Configured':   return { scan: false, start: true,  pause: false, stop: false, cancel: true };
+    case 'Initializing': return { scan: false, start: false, pause: false, stop: false, cancel: true };
+    case 'Scanning':     return { scan: false, start: false, pause: true,  stop: true,  cancel: true };
+    case 'Paused':       return { scan: false, start: true,  pause: false, stop: true,  cancel: true };
+    case 'Completed':    return { scan: true,  start: false, pause: false, stop: false, cancel: false };
+    case 'Stopped':      return { scan: true,  start: false, pause: false, stop: false, cancel: false };
+    case 'Failed':       return { scan: true,  start: false, pause: false, stop: false, cancel: false };
+    default:             return { scan: true,  start: false, pause: false, stop: false, cancel: false };
+  }
 }
 
-// -- Scan control --
+/* ============================================================================
+   Safety-net poller — reconciles ScanSession from /api/scan/status every 5 s
+   (T013). Runs only when the tab is visible to avoid background CPU burn.
+============================================================================ */
+
+function startSafetyNet() {
+  if (statusSafetyNetInterval !== null) return;
+  statusSafetyNetInterval = setInterval(async () => {
+    if (document.hidden) return;
+    try {
+      const resp = await fetch('/api/scan/status');
+      if (resp.ok) updateScanSession(await resp.json());
+    } catch (e) { /* swallow — this is a safety net, not a user flow */ }
+  }, 5000);
+}
+
+/* ============================================================================
+   Scan control
+============================================================================ */
+
 async function configureScan() {
   const data = collectRecord();
   try {
@@ -411,11 +542,10 @@ async function configureScan() {
     const result = await resp.json();
     if (resp.ok) {
       showToast('Configured. Click Start to begin scanning.');
-      loadPreview();
     } else {
       showToast('Error: ' + (result.detail || 'Unknown'), true);
     }
-  } catch(e) { showToast('Error: ' + e.message, true); }
+  } catch (e) { showToast('Error: ' + e.message, true); }
 }
 
 async function startScan() {
@@ -424,22 +554,29 @@ async function startScan() {
     const result = await resp.json();
     if (resp.ok) showToast('Scan started');
     else showToast('Error: ' + (result.detail || 'Unknown'), true);
-  } catch(e) { showToast('Error: ' + e.message, true); }
+  } catch (e) { showToast('Error: ' + e.message, true); }
 }
 
 async function pauseScan() {
   try {
     await fetch('/api/scan/pause', {method: 'POST'});
     showToast('Scan paused (instrument locked)');
-  } catch(e) { showToast('Error: ' + e.message, true); }
+  } catch (e) { showToast('Error: ' + e.message, true); }
 }
 
 async function stopScan() {
   try {
-    await fetch('/api/scan/stop', {method: 'POST'});
-    showToast('Scan stopped — files saved');
-    loadPreview();
-  } catch(e) { showToast('Error: ' + e.message, true); }
+    const resp = await fetch('/api/scan/stop', {method: 'POST'});
+    const body = await resp.json();
+    if (!resp.ok) { showToast('Stop error: ' + (body.detail || 'Unknown'), true); return; }
+    if (body.partial) {
+      showToast('Stopped — partial image saved');
+    } else {
+      showToast('Stopped — no partial image (scan had not started)');
+    }
+    // Image auto-load is driven by the scan_complete WS message. We don't
+    // need a bespoke Stop-only render path (US7 acceptance scenario 2).
+  } catch (e) { showToast('Stop error: ' + e.message, true); }
 }
 
 async function cancelScan() {
@@ -447,114 +584,327 @@ async function cancelScan() {
   try {
     await fetch('/api/scan/cancel', {method: 'POST'});
     showToast('Scan cancelled');
-  } catch(e) { showToast('Error: ' + e.message, true); }
+    // Cancel discards — clear the cache so no stale image shows.
+    ChannelCache.clear();
+    ViewerState.active_view = null;
+    updateViewButtons();
+    renderCanvas();
+  } catch (e) { showToast('Error: ' + e.message, true); }
 }
 
-// -- Image loading --
-async function loadPreview() {
+/* ============================================================================
+   scan_complete → one-shot fetch of both channels → populate cache → render
+============================================================================ */
+
+async function onScanComplete(msg) {
+  const outcome = (msg.outcome || 'completed').toLowerCase();
+  if (outcome === 'failed') {
+    showToast('Scan failed', true);
+    return;
+  }
+  showToast(`Scan ${outcome}: ${msg.scan}`);
+
   try {
-    const group = document.getElementById('scanGroup').value || 'public';
-    const scan = document.getElementById('scanName').value || '';
-    const c700 = document.getElementById('toggle700').classList.contains('active');
-    const c800 = document.getElementById('toggle800').classList.contains('active');
-    let channels = '';
-    if (c700 && c800) channels = '700 800';
-    else if (c700) channels = '700';
-    else if (c800) channels = '800';
-    else channels = '700 800';
-
-    const bg = inverted ? 'white' : 'black';
-    const url = `/api/image/preview?group=${encodeURIComponent(group)}&scan=${encodeURIComponent(scan)}&channels=${encodeURIComponent(channels)}&background=${bg}&contrast700=5&contrast800=5`;
-
+    const url = `/api/image/channels?scan=${encodeURIComponent(msg.scan)}&group=${encodeURIComponent(msg.group || LOCKED_GROUP)}`;
     const resp = await fetch(url);
-    if (!resp.ok) throw new Error('Preview failed');
-    const blob = await resp.blob();
-    const imgUrl = URL.createObjectURL(blob);
+    if (!resp.ok) throw new Error('channels fetch failed: HTTP ' + resp.status);
+    const envelope = await resp.json();
+    await populateChannelCache(envelope);
+  } catch (e) {
+    showToast('Image load error: ' + e.message, true);
+    return;
+  }
 
+  // FR-004: auto-display the first available channel.
+  if (ChannelCache.ch700) setActiveView('700');
+  else if (ChannelCache.ch800) setActiveView('800');
+  else showToast('No channels produced (partial stop with no data?)', true);
+}
+
+async function populateChannelCache(env) {
+  ChannelCache.clear();
+  ChannelCache.scan_name = env.scan;
+  ChannelCache.group = env.group;
+  ChannelCache.fetched_at = env.fetched_at;
+
+  if (env.ch700) ChannelCache.ch700 = await decodeBase64ToBitmap(env.ch700);
+  if (env.ch800) ChannelCache.ch800 = await decodeBase64ToBitmap(env.ch800);
+
+  updateViewButtons();
+  resetViewTransform();
+}
+
+async function decodeBase64ToBitmap(ch) {
+  // ch: {format: "image/png", bytes_base64: "..."}
+  const raw = atob(ch.bytes_base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  const blob = new Blob([bytes], { type: ch.format });
+  if (typeof createImageBitmap === 'function') {
+    return await createImageBitmap(blob);
+  }
+  // Fallback: HTMLImageElement (older browsers).
+  return await new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => {
-      currentImage = img;
-      renderCanvas();
-      document.getElementById('imagePlaceholder').style.display = 'none';
-      document.getElementById('imageCanvas').style.display = 'block';
-    };
-    img.src = imgUrl;
-  } catch(e) {
-    console.error('Preview load error:', e);
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = URL.createObjectURL(blob);
+  });
+}
+
+function updateViewButtons() {
+  document.getElementById('btnView700').disabled = !ChannelCache.ch700;
+  document.getElementById('btnView800').disabled = !ChannelCache.ch800;
+  document.getElementById('btnViewOverlay').disabled =
+    !(ChannelCache.ch700 && ChannelCache.ch800);
+  // Re-apply active class per ViewerState.active_view
+  for (const id of ['btnView700', 'btnView800', 'btnViewOverlay']) {
+    document.getElementById(id).classList.remove('active');
+  }
+  if (ViewerState.active_view === '700') document.getElementById('btnView700').classList.add('active');
+  else if (ViewerState.active_view === '800') document.getElementById('btnView800').classList.add('active');
+  else if (ViewerState.active_view === 'overlay') document.getElementById('btnViewOverlay').classList.add('active');
+
+  // View label on the canvas.
+  const label = document.getElementById('viewLabel');
+  if (ViewerState.active_view) {
+    label.style.display = 'block';
+    label.textContent = ViewerState.active_view.toUpperCase();
+  } else {
+    label.style.display = 'none';
   }
 }
 
-function renderCanvas() {
-  if (!currentImage) return;
-  const canvas = document.getElementById('imageCanvas');
-  const ctx = canvas.getContext('2d');
-  const viewer = document.getElementById('imageViewer');
-
-  // Fit to viewer
-  const maxW = viewer.clientWidth - 20;
-  const maxH = viewer.clientHeight - 20;
-  const scale = Math.min(maxW / currentImage.width, maxH / currentImage.height, 1);
-  canvas.width = currentImage.width * scale;
-  canvas.height = currentImage.height * scale;
-
-  ctx.drawImage(currentImage, 0, 0, canvas.width, canvas.height);
-
-  // Apply brightness/contrast
-  const brightness = parseInt(document.getElementById('brightness').value);
-  const contrast = parseInt(document.getElementById('contrast').value);
-
-  if (brightness !== 0 || contrast !== 0) {
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const d = imgData.data;
-    const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-    for (let i = 0; i < d.length; i += 4) {
-      for (let c = 0; c < 3; c++) {
-        let v = d[i + c];
-        v += brightness;
-        v = contrastFactor * (v - 128) + 128;
-        d[i + c] = Math.max(0, Math.min(255, v));
-      }
-    }
-    ctx.putImageData(imgData, 0, 0);
+function setActiveView(view) {
+  if (view !== null) {
+    // Guard against selecting a channel that is not in the cache.
+    if (view === '700' && !ChannelCache.ch700) return;
+    if (view === '800' && !ChannelCache.ch800) return;
+    if (view === 'overlay' && (!ChannelCache.ch700 || !ChannelCache.ch800)) return;
   }
-}
-
-function updateDisplay() {
-  document.getElementById('brightnessVal').textContent = document.getElementById('brightness').value;
-  document.getElementById('contrastVal').textContent = document.getElementById('contrast').value;
+  ViewerState.active_view = view;
+  updateViewButtons();
   renderCanvas();
 }
 
-function toggleChannel(ch) {
-  const btn = document.getElementById('toggle' + ch);
-  btn.classList.toggle('active');
-  loadPreview();
+// Wire up the view buttons (US2).
+document.addEventListener('DOMContentLoaded', () => {
+  for (const id of ['btnView700', 'btnView800', 'btnViewOverlay']) {
+    const btn = document.getElementById(id);
+    btn.addEventListener('click', () => setActiveView(btn.dataset.view));
+  }
+});
+
+/* ============================================================================
+   Canvas rendering — transform matrix + brightness/contrast + overlay
+============================================================================ */
+
+function resetViewTransform() {
+  ViewerState.scale = 1.0;
+  ViewerState.tx = 0;
+  ViewerState.ty = 0;
+}
+
+function renderCanvas() {
+  const canvas = document.getElementById('imageCanvas');
+  const ctx = canvas.getContext('2d');
+  const viewer = document.getElementById('imageViewer');
+  const placeholder = document.getElementById('imagePlaceholder');
+
+  const view = ViewerState.active_view;
+  const bitmap = view === '700' ? ChannelCache.ch700
+               : view === '800' ? ChannelCache.ch800
+               : null;  // overlay handled below
+
+  if (view === null || (view !== 'overlay' && !bitmap)) {
+    // FR-009: blank canvas when nothing is selected.
+    canvas.style.display = 'none';
+    placeholder.style.display = 'block';
+    updateViewButtons();
+    return;
+  }
+
+  placeholder.style.display = 'none';
+  canvas.style.display = 'block';
+
+  // Fit-to-viewer sizing.
+  const maxW = viewer.clientWidth - 20;
+  const maxH = viewer.clientHeight - 20;
+  let srcW, srcH;
+  if (view === 'overlay') {
+    srcW = ChannelCache.ch700.width; srcH = ChannelCache.ch700.height;
+  } else {
+    srcW = bitmap.width; srcH = bitmap.height;
+  }
+  const fitScale = Math.min(maxW / srcW, maxH / srcH, 1);
+  canvas.width = Math.max(1, Math.round(srcW * fitScale));
+  canvas.height = Math.max(1, Math.round(srcH * fitScale));
+
+  // Compose the base image into an offscreen canvas so brightness/contrast
+  // can be applied uniformly, then blit with the pan/zoom transform.
+  const compose = document.createElement('canvas');
+  compose.width = canvas.width;
+  compose.height = canvas.height;
+  const cctx = compose.getContext('2d');
+  cctx.fillStyle = ViewerState.inverted ? '#fff' : '#000';
+  cctx.fillRect(0, 0, compose.width, compose.height);
+
+  if (view === 'overlay') {
+    // 700 → red tint, 800 → green tint; 'lighten' composite yields the
+    // standard LI-COR dual-channel look. If inverted, flip the base fill
+    // but keep the channel tints.
+    drawTinted(cctx, ChannelCache.ch700, '#ff4444');
+    cctx.globalCompositeOperation = 'lighten';
+    drawTinted(cctx, ChannelCache.ch800, '#44cc44');
+    cctx.globalCompositeOperation = 'source-over';
+  } else {
+    const tint = view === '700' ? '#ff4444' : '#44cc44';
+    drawTinted(cctx, bitmap, tint);
+  }
+
+  applyBrightnessContrast(cctx, canvas.width, canvas.height);
+
+  // Blit to the visible canvas with the current zoom/pan transform (US4).
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(
+    ViewerState.scale, 0, 0, ViewerState.scale,
+    ViewerState.tx, ViewerState.ty,
+  );
+  ctx.drawImage(compose, 0, 0);
+  ctx.restore();
+
+  updateViewButtons();
+}
+
+function drawTinted(ctx, bitmap, tintColor) {
+  // Draw the grayscale bitmap and multiply by a tint so 700 is red and
+  // 800 is green. Uses two-step compositing: draw solid tint, then
+  // 'multiply' with the grayscale.
+  ctx.save();
+  ctx.drawImage(bitmap, 0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.fillStyle = tintColor;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.restore();
+}
+
+function applyBrightnessContrast(ctx, w, h) {
+  const b = ViewerState.brightness;
+  const c = ViewerState.contrast;
+  if (b === 0 && c === 0 && !ViewerState.inverted) return;
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  const cf = (259 * (c + 255)) / (255 * (259 - c));
+  for (let i = 0; i < d.length; i += 4) {
+    for (let j = 0; j < 3; j++) {
+      let v = d[i + j];
+      if (ViewerState.inverted) v = 255 - v;
+      v += b;
+      v = cf * (v - 128) + 128;
+      d[i + j] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+function onBrightnessContrast() {
+  ViewerState.brightness = parseInt(document.getElementById('brightness').value);
+  ViewerState.contrast = parseInt(document.getElementById('contrast').value);
+  document.getElementById('brightnessVal').textContent = ViewerState.brightness;
+  document.getElementById('contrastVal').textContent = ViewerState.contrast;
+  renderCanvas();
 }
 
 function invertImage() {
-  inverted = !inverted;
-  document.getElementById('btnInvert').classList.toggle('btn-warning', inverted);
-  loadPreview();
+  ViewerState.inverted = !ViewerState.inverted;
+  document.getElementById('btnInvert').classList.toggle('btn-warning', ViewerState.inverted);
+  renderCanvas();
 }
 
-function resetDisplay() {
+function resetView() {
+  ViewerState.brightness = 0;
+  ViewerState.contrast = 0;
+  ViewerState.inverted = false;
   document.getElementById('brightness').value = 0;
   document.getElementById('contrast').value = 0;
   document.getElementById('brightnessVal').textContent = '0';
   document.getElementById('contrastVal').textContent = '0';
-  inverted = false;
   document.getElementById('btnInvert').classList.remove('btn-warning');
-  loadPreview();
+  resetViewTransform();
+  renderCanvas();
 }
 
-// -- Crop --
+/* ============================================================================
+   Zoom + pan (US4) — single transform matrix, cursor-anchored wheel zoom,
+   drag pan, double-click reset. Preserved across channel switches (FR-013).
+============================================================================ */
+
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 20.0;
+
+function initZoomPan() {
+  const canvas = document.getElementById('imageCanvas');
+
+  canvas.addEventListener('wheel', (e) => {
+    if (ViewerState.active_view === null) return;
+    if (cropping) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const k = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const newScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, ViewerState.scale * k));
+    const actualK = newScale / ViewerState.scale;
+    ViewerState.tx = cx - (cx - ViewerState.tx) * actualK;
+    ViewerState.ty = cy - (cy - ViewerState.ty) * actualK;
+    ViewerState.scale = newScale;
+    renderCanvas();
+  }, { passive: false });
+
+  let dragging = false;
+  let dragStart = null;
+  canvas.addEventListener('mousedown', (e) => {
+    if (cropping) return;
+    if (ViewerState.active_view === null) return;
+    dragging = true;
+    dragStart = { x: e.clientX - ViewerState.tx, y: e.clientY - ViewerState.ty };
+    canvas.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    ViewerState.tx = e.clientX - dragStart.x;
+    ViewerState.ty = e.clientY - dragStart.y;
+    renderCanvas();
+  });
+  window.addEventListener('mouseup', () => {
+    dragging = false;
+    canvas.classList.remove('dragging');
+  });
+
+  canvas.addEventListener('dblclick', () => {
+    if (cropping) return;
+    resetViewTransform();
+    renderCanvas();
+  });
+}
+
+/* ============================================================================
+   Crop (legacy feature, mutually exclusive with zoom)
+============================================================================ */
+
+let cropping = false;
+let cropStart = null;
+
 function startCrop() {
   cropping = !cropping;
+  const canvas = document.getElementById('imageCanvas');
   if (cropping) {
-    showToast('Click and drag on the image to crop');
-    document.getElementById('imageViewer').style.cursor = 'crosshair';
+    showToast('Click and drag on the image to crop (zoom/pan disabled)');
+    canvas.classList.add('cropping');
   } else {
-    document.getElementById('imageViewer').style.cursor = 'default';
+    canvas.classList.remove('cropping');
     document.getElementById('cropOverlay').style.display = 'none';
   }
 }
@@ -564,7 +914,7 @@ document.addEventListener('DOMContentLoaded', () => {
   viewer.addEventListener('mousedown', (e) => {
     if (!cropping) return;
     const rect = viewer.getBoundingClientRect();
-    cropStart = {x: e.clientX - rect.left, y: e.clientY - rect.top};
+    cropStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const overlay = document.getElementById('cropOverlay');
     overlay.style.display = 'block';
     overlay.style.left = cropStart.x + 'px';
@@ -583,46 +933,67 @@ document.addEventListener('DOMContentLoaded', () => {
     overlay.style.width = Math.abs(x - cropStart.x) + 'px';
     overlay.style.height = Math.abs(y - cropStart.y) + 'px';
   });
-  viewer.addEventListener('mouseup', (e) => {
+  viewer.addEventListener('mouseup', () => {
     if (!cropping || !cropStart) return;
-    const rect = viewer.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
     cropStart = null;
     cropping = false;
-    document.getElementById('imageViewer').style.cursor = 'default';
+    viewer.style.cursor = 'default';
     showToast('Crop region selected — export to apply');
   });
 });
 
-// -- Live preview polling --
-function toggleAutoUpdate() {
+/* ============================================================================
+   Live-preview toggle (US5). One handle, cleared on OFF (B1 fix).
+============================================================================ */
+
+function toggleLivePreview() {
   const btn = document.getElementById('btnLive');
-  if (autoUpdateInterval) {
+  if (autoUpdateInterval !== null) {
     clearInterval(autoUpdateInterval);
     autoUpdateInterval = null;
     btn.textContent = 'Live preview: OFF';
     btn.classList.remove('btn-warning');
     showToast('Live preview stopped');
-  } else {
-    autoUpdateInterval = setInterval(loadPreview, 3000);
-    btn.textContent = 'Live preview: ON';
-    btn.classList.add('btn-warning');
-    showToast('Live preview: updating every 3s');
+    return;
   }
+  autoUpdateInterval = setInterval(async () => {
+    // Only refresh if a scan is in flight; otherwise there's nothing new.
+    if (!ScanSession.scan_name) return;
+    try {
+      const url = `/api/image/channels?scan=${encodeURIComponent(ScanSession.scan_name)}&group=${encodeURIComponent(ScanSession.group || LOCKED_GROUP)}`;
+      const resp = await fetch(url);
+      if (!resp.ok) return;
+      await populateChannelCache(await resp.json());
+      if (ViewerState.active_view === null && ChannelCache.ch700) setActiveView('700');
+      else renderCanvas();
+    } catch (e) { /* swallow — this is an opportunistic refresh */ }
+  }, 3000);
+  btn.textContent = 'Live preview: ON';
+  btn.classList.add('btn-warning');
+  showToast('Live preview: updating every 3 s');
 }
 
-// -- Export --
+window.addEventListener('beforeunload', () => {
+  if (autoUpdateInterval !== null) clearInterval(autoUpdateInterval);
+  if (statusSafetyNetInterval !== null) clearInterval(statusSafetyNetInterval);
+});
+
+/* ============================================================================
+   Export (US3) — flat payload, no circular metadata self-reference (B2 fix).
+============================================================================ */
+
 async function exportImage(format, includeFooter) {
   const data = collectRecord();
+  // Flat payload per contracts/odyssey-app-http-api.md. Do NOT set
+  // data.metadata = data — that was the B2 circular-JSON bug.
   data.format = format;
   data.include_footer = includeFooter;
-  data.metadata = data;
+  data.view = ViewerState.active_view || '700';
   try {
     const resp = await fetch('/api/image/export', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
     });
-    if (!resp.ok) throw new Error('Export failed');
+    if (!resp.ok) throw new Error('Export failed: HTTP ' + resp.status);
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -631,10 +1002,13 @@ async function exportImage(format, includeFooter) {
     a.click();
     URL.revokeObjectURL(url);
     showToast('Exported ' + format.toUpperCase());
-  } catch(e) { showToast('Export error: ' + e.message, true); }
+  } catch (e) { showToast('Export error: ' + e.message, true); }
 }
 
-// -- Lanes --
+/* ============================================================================
+   Lanes
+============================================================================ */
+
 function addLane(name='', treatment='', ug='') {
   laneCount++;
   const tbody = document.getElementById('laneBody');
@@ -644,15 +1018,21 @@ function addLane(name='', treatment='', ug='') {
   tbody.appendChild(tr);
 }
 function renumberLanes() {
-  document.querySelectorAll('#laneBody tr').forEach((row,i) => { row.querySelector('.lane-num').textContent = i+1; });
+  document.querySelectorAll('#laneBody tr').forEach((row, i) => {
+    row.querySelector('.lane-num').textContent = i + 1;
+  });
 }
 
-// -- Collect form data --
+/* ============================================================================
+   Collect form data
+============================================================================ */
+
 function collectRecord() {
   const lanes = [];
   document.querySelectorAll('#laneBody tr').forEach((row, i) => {
     lanes.push({
-      lane: i+1, name: row.querySelector('.lane-name')?.value || '',
+      lane: i + 1,
+      name: row.querySelector('.lane-name')?.value || '',
       treatment: row.querySelector('.lane-treatment')?.value || '',
       loading_ug: parseFloat(row.querySelector('.lane-ug')?.value) || null,
       is_ladder: (row.querySelector('.lane-name')?.value || '').toLowerCase().includes('ladder'),
@@ -664,7 +1044,7 @@ function collectRecord() {
     experiment_id: document.getElementById('experimentId').value,
     protocol_ref: document.getElementById('protocolRef').value,
     scan_name: document.getElementById('scanName').value,
-    scan_group: document.getElementById('scanGroup').value,
+    scan_group: LOCKED_GROUP,  // FR-018: always "odyssey", UI has no escape hatch
     scan_settings: {
       resolution_um: parseInt(document.getElementById('resolution').value),
       quality: document.getElementById('quality').value,
@@ -693,7 +1073,10 @@ function collectRecord() {
   };
 }
 
-// -- Save/Load --
+/* ============================================================================
+   Save/Load records
+============================================================================ */
+
 async function saveRecord() {
   const data = collectRecord();
   try {
@@ -703,7 +1086,7 @@ async function saveRecord() {
     const result = await resp.json();
     if (result.status === 'ok') showToast('Saved: ' + result.filename);
     else showToast('Error: ' + (result.detail || 'Unknown'), true);
-  } catch(e) { showToast('Error: ' + e.message, true); }
+  } catch (e) { showToast('Error: ' + e.message, true); }
 }
 
 async function loadRecords() {
@@ -714,10 +1097,13 @@ async function loadRecords() {
     let msg = 'Recent records:\n';
     records.slice(0, 10).forEach(r => { msg += `${r.filename} — ${r.scan_name} (${r.operator})\n`; });
     alert(msg);
-  } catch(e) { showToast('Error: ' + e.message, true); }
+  } catch (e) { showToast('Error: ' + e.message, true); }
 }
 
-// -- Toast --
+/* ============================================================================
+   Toast
+============================================================================ */
+
 function showToast(msg, isError) {
   const toast = document.getElementById('toast');
   toast.textContent = msg;
@@ -725,14 +1111,16 @@ function showToast(msg, isError) {
   setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
-// -- Init --
+/* ============================================================================
+   Init
+============================================================================ */
+
 async function init() {
   addLane('Ladder', '', '');
   addLane('', '', '');
   addLane('', '', '');
   addLane('', '', '');
 
-  // Check connection mode
   try {
     const resp = await fetch('/api/connection');
     const info = await resp.json();
@@ -743,9 +1131,12 @@ async function init() {
     } else {
       badge.textContent = 'simulated';
     }
-  } catch(e) {}
+  } catch (e) {}
 
+  initZoomPan();
   connectWS();
+  startSafetyNet();
+  applyScanSession();
 }
 
 init();
