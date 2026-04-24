@@ -27,40 +27,10 @@
     --danger: #e5484d;
   }
 
-  /* ---- Theme 1: Navy (default dark) ---- */
-  html, html[data-theme="navy"] {
-    --bg: #0f172a;
-    --surface: #1b2740;
-    --surface-raised: #243352;
-    --surface2: #12325a;
-    --accent: #ff5c7e;
-    --accent2: #5dd6ff;
-    --text: #f2f4fa;
-    --text-dim: #c4cfe1;
-    --text-muted: #8898b5;
-    --border: #3a4a72;
-    --border-soft: #283a60;
-    --input-bg: #1a2540;
-  }
-
-  /* ---- Theme 2: Slate (neutral dark grey) ---- */
-  html[data-theme="slate"] {
-    --bg: #14171c;
-    --surface: #1e232b;
-    --surface-raised: #2a313b;
-    --surface2: #384050;
-    --accent: #ff7a59;
-    --accent2: #7dd3c0;
-    --text: #f4f5f7;
-    --text-dim: #cdd3de;
-    --text-muted: #8b95a5;
-    --border: #3e4654;
-    --border-soft: #2a313b;
-    --input-bg: #1a1f27;
-  }
-
-  /* ---- Theme 3: Paper (light) ---- */
-  html[data-theme="paper"] {
+  /* ---- Theme 1: Paper (warm cream, default) ----
+     The light default: warm off-white with muted red + teal accents.
+     Reads like a lab notebook — high readability in ambient light. */
+  html, html[data-theme="paper"] {
     --bg: #f4f1ea;
     --surface: #fbf8f1;
     --surface-raised: #ffffff;
@@ -75,36 +45,74 @@
     --input-bg: #ffffff;
   }
 
-  /* ---- Theme 4: Midnight (very dark, high contrast) ---- */
-  html[data-theme="midnight"] {
-    --bg: #050509;
-    --surface: #0d0e14;
-    --surface-raised: #16181f;
-    --surface2: #1d212c;
-    --accent: #ff4d8a;
-    --accent2: #00e5ff;
-    --text: #ffffff;
-    --text-dim: #dde4ef;
-    --text-muted: #9aa5bd;
-    --border: #3a4056;
-    --border-soft: #252a3a;
-    --input-bg: #0a0c13;
+  /* ---- Theme 2: Arctic (cool crisp blue-white) ----
+     Cooler light variant. Feels clean/scientific. Deep rose + azure
+     accents cut crisply through the icy surface. */
+  html[data-theme="arctic"] {
+    --bg: #eef3f8;
+    --surface: #f8fbff;
+    --surface-raised: #ffffff;
+    --surface2: #dde8f2;
+    --accent: #c8326d;
+    --accent2: #0063a8;
+    --text: #0e1a2b;
+    --text-dim: #42546b;
+    --text-muted: #7a8ba5;
+    --border: #b8c6d8;
+    --border-soft: #d5dfec;
+    --input-bg: #ffffff;
   }
 
-  /* ---- Theme 5: Amber (warm dark, night-shift friendly) ---- */
-  html[data-theme="amber"] {
-    --bg: #1a140c;
-    --surface: #251d12;
-    --surface-raised: #322617;
-    --surface2: #443218;
-    --accent: #ffaa44;
-    --accent2: #ffd180;
-    --text: #fff3e0;
-    --text-dim: #e2c8a8;
-    --text-muted: #a68e72;
-    --border: #5a4326;
-    --border-soft: #3a2e1a;
-    --input-bg: #1f1810;
+  /* ---- Theme 3: Sage (soft white with green accents) ----
+     A calming, slightly greenish off-white. Sage accent keeps it from
+     feeling clinical; burgundy rose is the primary pop. */
+  html[data-theme="sage"] {
+    --bg: #eef3ee;
+    --surface: #f7fbf8;
+    --surface-raised: #ffffff;
+    --surface2: #dae5dd;
+    --accent: #b3325c;
+    --accent2: #3d8a5c;
+    --text: #1a2620;
+    --text-dim: #4a5a52;
+    --text-muted: #7a8a82;
+    --border: #bac8bf;
+    --border-soft: #d7e0da;
+    --input-bg: #ffffff;
+  }
+
+  /* ---- Theme 4: Sandstone (warm beige + terracotta) ----
+     Earthy warmth. Beige surfaces with terracotta primary and muted
+     slate-blue secondary — good for long sessions. */
+  html[data-theme="sandstone"] {
+    --bg: #f2ece0;
+    --surface: #faf5ea;
+    --surface-raised: #ffffff;
+    --surface2: #e6dcc8;
+    --accent: #b0552e;
+    --accent2: #6a8ca0;
+    --text: #2a231a;
+    --text-dim: #5a4f40;
+    --text-muted: #8a7d6a;
+    --border: #c9bb9f;
+    --border-soft: #ded3b9;
+    --input-bg: #ffffff;
+  }
+
+  /* ---- Theme 5: Navy (the one dark option) ---- */
+  html[data-theme="navy"] {
+    --bg: #0f172a;
+    --surface: #1b2740;
+    --surface-raised: #243352;
+    --surface2: #12325a;
+    --accent: #ff5c7e;
+    --accent2: #5dd6ff;
+    --text: #f2f4fa;
+    --text-dim: #c4cfe1;
+    --text-muted: #8898b5;
+    --border: #3a4a72;
+    --border-soft: #283a60;
+    --input-bg: #1a2540;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -314,11 +322,11 @@
   <div class="status-bar">
     <select class="theme-select" id="themeSelect" onchange="applyTheme(this.value)"
             title="Switch color scheme (saved for your browser)">
-      <option value="navy">Theme: Navy</option>
-      <option value="slate">Theme: Slate</option>
-      <option value="paper">Theme: Paper (light)</option>
-      <option value="midnight">Theme: Midnight</option>
-      <option value="amber">Theme: Amber</option>
+      <option value="paper">Theme: Paper (warm cream)</option>
+      <option value="arctic">Theme: Arctic (cool white)</option>
+      <option value="sage">Theme: Sage (soft green)</option>
+      <option value="sandstone">Theme: Sandstone (warm beige)</option>
+      <option value="navy">Theme: Navy (dark)</option>
     </select>
     <span class="conn-badge" id="connBadge">simulated</span>
     <span id="instrumentId">ODY-1576</span>
@@ -1343,22 +1351,23 @@ async function loadRecords() {
    Theme selector (persisted in localStorage)
 ============================================================================ */
 
-const THEMES = ['navy', 'slate', 'paper', 'midnight', 'amber'];
+const THEMES = ['paper', 'arctic', 'sage', 'sandstone', 'navy'];
+const DEFAULT_THEME = 'paper';
 const THEME_STORAGE_KEY = 'odyssey_app_theme';
 
 function applyTheme(name) {
-  if (!THEMES.includes(name)) name = 'navy';
+  if (!THEMES.includes(name)) name = DEFAULT_THEME;
   document.documentElement.setAttribute('data-theme', name);
   try { localStorage.setItem(THEME_STORAGE_KEY, name); } catch (e) { /* no-op */ }
-  // Re-render canvas so the black/white background under inverted mode
-  // picks up any viewer-related token changes (currently none, but cheap).
   renderCanvas();
 }
 
 function initTheme() {
-  let saved = 'navy';
-  try { saved = localStorage.getItem(THEME_STORAGE_KEY) || 'navy'; } catch (e) {}
-  if (!THEMES.includes(saved)) saved = 'navy';
+  let saved = DEFAULT_THEME;
+  try { saved = localStorage.getItem(THEME_STORAGE_KEY) || DEFAULT_THEME; } catch (e) {}
+  // Map away retired themes (slate/midnight/amber → default) so returning
+  // users don't land in a theme that no longer exists.
+  if (!THEMES.includes(saved)) saved = DEFAULT_THEME;
   const sel = document.getElementById('themeSelect');
   if (sel) sel.value = saved;
   document.documentElement.setAttribute('data-theme', saved);
