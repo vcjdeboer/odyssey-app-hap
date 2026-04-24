@@ -17,27 +17,94 @@
 <title>Odyssey Western Blot Imager</title>
 <style>
   :root {
-    /* Palette rebalanced 2026-04-24 — old #999 dim text failed WCAG on the
-       dark surfaces. New --text-dim hits ~7:1 contrast; --text-muted is
-       reserved for tertiary copy (location strip, caption labels). */
-    --bg: #0f172a;
-    --surface: #1b2740;
-    --surface-raised: #243352;   /* used by the primary Scan Settings card */
-    --surface2: #12325a;
-    --accent: #ff5c7e;           /* primary action color (Scan, section titles) */
-    --accent2: #5dd6ff;           /* info/secondary accent (Scan Settings border, focus) */
-    --text: #f2f4fa;
-    --text-dim: #c4cfe1;          /* for field labels, status — readable on dark */
-    --text-muted: #8898b5;        /* only for very tertiary copy */
-    --border: #3a4a72;
-    --border-soft: #283a60;
+    /* Channel + signal colors are theme-independent so band renders don't
+       shift between themes. */
     --ch700: #ff5a5a;
     --ch800: #58e07a;
     --overlay: #c7a6ff;
-    --input-bg: #1a2540;
     --success: #45c46e;
     --warning: #ffaa33;
     --danger: #e5484d;
+  }
+
+  /* ---- Theme 1: Navy (default dark) ---- */
+  html, html[data-theme="navy"] {
+    --bg: #0f172a;
+    --surface: #1b2740;
+    --surface-raised: #243352;
+    --surface2: #12325a;
+    --accent: #ff5c7e;
+    --accent2: #5dd6ff;
+    --text: #f2f4fa;
+    --text-dim: #c4cfe1;
+    --text-muted: #8898b5;
+    --border: #3a4a72;
+    --border-soft: #283a60;
+    --input-bg: #1a2540;
+  }
+
+  /* ---- Theme 2: Slate (neutral dark grey) ---- */
+  html[data-theme="slate"] {
+    --bg: #14171c;
+    --surface: #1e232b;
+    --surface-raised: #2a313b;
+    --surface2: #384050;
+    --accent: #ff7a59;
+    --accent2: #7dd3c0;
+    --text: #f4f5f7;
+    --text-dim: #cdd3de;
+    --text-muted: #8b95a5;
+    --border: #3e4654;
+    --border-soft: #2a313b;
+    --input-bg: #1a1f27;
+  }
+
+  /* ---- Theme 3: Paper (light) ---- */
+  html[data-theme="paper"] {
+    --bg: #f4f1ea;
+    --surface: #fbf8f1;
+    --surface-raised: #ffffff;
+    --surface2: #e8e2d4;
+    --accent: #c04668;
+    --accent2: #0077aa;
+    --text: #1f2328;
+    --text-dim: #4d5566;
+    --text-muted: #78849a;
+    --border: #c9bfa8;
+    --border-soft: #ded5c3;
+    --input-bg: #ffffff;
+  }
+
+  /* ---- Theme 4: Midnight (very dark, high contrast) ---- */
+  html[data-theme="midnight"] {
+    --bg: #050509;
+    --surface: #0d0e14;
+    --surface-raised: #16181f;
+    --surface2: #1d212c;
+    --accent: #ff4d8a;
+    --accent2: #00e5ff;
+    --text: #ffffff;
+    --text-dim: #dde4ef;
+    --text-muted: #9aa5bd;
+    --border: #3a4056;
+    --border-soft: #252a3a;
+    --input-bg: #0a0c13;
+  }
+
+  /* ---- Theme 5: Amber (warm dark, night-shift friendly) ---- */
+  html[data-theme="amber"] {
+    --bg: #1a140c;
+    --surface: #251d12;
+    --surface-raised: #322617;
+    --surface2: #443218;
+    --accent: #ffaa44;
+    --accent2: #ffd180;
+    --text: #fff3e0;
+    --text-dim: #e2c8a8;
+    --text-muted: #a68e72;
+    --border: #5a4326;
+    --border-soft: #3a2e1a;
+    --input-bg: #1f1810;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -59,6 +126,12 @@
   @keyframes pulse { 50% { opacity: 0.5; } }
   .conn-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--surface2); }
   .conn-badge.real { background: var(--success); color: #000; }
+
+  .theme-select {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; font-size: 11px; padding: 3px 6px; font-family: inherit;
+  }
+  .theme-select:focus { outline: none; border-color: var(--accent2); }
 
   .app { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 48px); }
 
@@ -239,6 +312,14 @@
 <header>
   <h1><span>Odyssey</span> Western Blot Imager</h1>
   <div class="status-bar">
+    <select class="theme-select" id="themeSelect" onchange="applyTheme(this.value)"
+            title="Switch color scheme (saved for your browser)">
+      <option value="navy">Theme: Navy</option>
+      <option value="slate">Theme: Slate</option>
+      <option value="paper">Theme: Paper (light)</option>
+      <option value="midnight">Theme: Midnight</option>
+      <option value="amber">Theme: Amber</option>
+    </select>
     <span class="conn-badge" id="connBadge">simulated</span>
     <span id="instrumentId">ODY-1576</span>
     <span><span class="status-dot" id="statusDot"></span> <span id="statusText">Idle</span></span>
@@ -1259,6 +1340,31 @@ async function loadRecords() {
 }
 
 /* ============================================================================
+   Theme selector (persisted in localStorage)
+============================================================================ */
+
+const THEMES = ['navy', 'slate', 'paper', 'midnight', 'amber'];
+const THEME_STORAGE_KEY = 'odyssey_app_theme';
+
+function applyTheme(name) {
+  if (!THEMES.includes(name)) name = 'navy';
+  document.documentElement.setAttribute('data-theme', name);
+  try { localStorage.setItem(THEME_STORAGE_KEY, name); } catch (e) { /* no-op */ }
+  // Re-render canvas so the black/white background under inverted mode
+  // picks up any viewer-related token changes (currently none, but cheap).
+  renderCanvas();
+}
+
+function initTheme() {
+  let saved = 'navy';
+  try { saved = localStorage.getItem(THEME_STORAGE_KEY) || 'navy'; } catch (e) {}
+  if (!THEMES.includes(saved)) saved = 'navy';
+  const sel = document.getElementById('themeSelect');
+  if (sel) sel.value = saved;
+  document.documentElement.setAttribute('data-theme', saved);
+}
+
+/* ============================================================================
    Toast
 ============================================================================ */
 
@@ -1274,6 +1380,7 @@ function showToast(msg, isError) {
 ============================================================================ */
 
 async function init() {
+  initTheme();  // before anything else so the first paint is in the right palette
   addLane('Ladder', '', '');
   addLane('', '', '');
   addLane('', '', '');
