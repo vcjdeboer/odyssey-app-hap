@@ -141,7 +141,11 @@
   }
   .theme-select:focus { outline: none; border-color: var(--accent2); }
 
-  .app { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 48px); }
+  .app {
+    display: grid;
+    grid-template-columns: 380px 1fr 300px;
+    height: calc(100vh - 48px);
+  }
 
   .sidebar { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; padding: 14px; }
   .section { margin-bottom: 18px; }
@@ -306,6 +310,44 @@
   }
   .export-bar label { font-size: 11px; color: var(--text-dim); }
 
+  /* Right-side scan history column */
+  .history {
+    background: var(--surface); border-left: 1px solid var(--border);
+    overflow-y: auto; padding: 14px;
+  }
+  .history-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1.4px; color: var(--text-dim);
+    padding-bottom: 6px; margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .history-header .count { color: var(--accent2); font-weight: 800; }
+  .history-empty {
+    font-size: 12px; color: var(--text-muted); font-style: italic;
+    padding: 8px 4px;
+  }
+  .history-item {
+    background: var(--input-bg); border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent2);
+    border-radius: 5px; padding: 8px 10px; margin-bottom: 8px;
+    cursor: pointer; transition: all 0.12s;
+  }
+  .history-item:hover { filter: brightness(1.1); border-color: var(--accent2); }
+  .history-item.active {
+    border-color: var(--accent); border-left-color: var(--accent);
+    background: var(--surface-raised);
+  }
+  .history-item .name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .history-item .meta {
+    font-size: 10px; color: var(--text-dim); margin-top: 2px;
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .history-item .meta .sep { color: var(--text-muted); }
+  .history-item .time {
+    font-size: 10px; color: var(--text-muted); margin-top: 4px;
+  }
+
   /* Preview run record — modal overlay */
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
@@ -418,7 +460,7 @@
     <div class="section-title">Experiment</div>
     <div class="form-row">
       <div class="field"><label>Project</label><input type="text" id="project" placeholder="VB20260424"
-             oninput="syncIdentity('project')"></div>
+             oninput="syncIdentity('project'); refreshHistoryDebounced()"></div>
       <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"
              oninput="syncIdentity('scanName')" required></div>
     </div>
@@ -535,7 +577,7 @@
     <div class="id-pair">
       <span class="id-label">Project name</span>
       <input type="text" class="id-field" id="projectHeader" placeholder="VB20260424"
-             oninput="syncIdentity('projectHeader')">
+             oninput="syncIdentity('projectHeader'); refreshHistoryDebounced()">
       <span class="slash">/</span>
       <span class="id-label">Scan name</span>
       <input type="text" class="id-field" id="scanNameHeader" placeholder="western_01"
@@ -621,6 +663,17 @@
     <span><b>Configure</b> auto-saves the run record to <code>odyssey_app/records/</code> on the lab computer</span>
     <span><b>Scan images</b> from the instrument land in <code>odyssey_app/scans/</code></span>
     <span><b>Download PNG / TIFF</b> goes to your browser's Downloads folder</span>
+  </div>
+</div>
+
+<!-- Right column: scan history for the current project -->
+<div class="history">
+  <div class="history-header">
+    <span>Scans in <span id="historyProject" style="color: var(--text);">…</span></span>
+    <span class="count" id="historyCount">0</span>
+  </div>
+  <div id="historyList">
+    <div class="history-empty">No scans saved yet for this project.</div>
   </div>
 </div>
 </div>
@@ -829,12 +882,25 @@ function validateRunRecord(data) {
   return { ok: missing.length === 0, missing, firstFocus };
 }
 
+/* Uniquify a scan name against the set of names already saved for the
+ * current project. If `base` is not in `existing`, returns it unchanged.
+ * Otherwise appends `_2`, `_3`, … until it no longer collides. */
+function uniquifyScanName(base, existing) {
+  base = (base || '').trim();
+  const existingSet = new Set(existing.map(n => (n || '').trim()));
+  if (!existingSet.has(base)) return base;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}_${i}`;
+    if (!existingSet.has(candidate)) return candidate;
+  }
+  return `${base}_${Date.now()}`;  // pathological fallback
+}
+
 async function configureScan() {
   const data = collectRecord();
   const v = validateRunRecord(data);
   if (!v.ok) {
     showToast('Missing: ' + v.missing.join(', '), true);
-    // Focus the first offender that has a concrete element id.
     const focusTarget = v.firstFocus.find(([_, id]) => id);
     if (focusTarget) {
       const el = document.getElementById(focusTarget[1]);
@@ -842,6 +908,31 @@ async function configureScan() {
     }
     return;
   }
+
+  // Auto-uniquify the scan name against this project's existing scans.
+  // Avoids silently clobbering older records with the same name — each
+  // Configure produces a distinctly-named record visible in history.
+  try {
+    const resp = await fetch('/api/records');
+    if (resp.ok) {
+      const recs = await resp.json();
+      const existing = recs
+        .filter(r => (r.project || '').trim().toLowerCase()
+                   === (data.project || '').trim().toLowerCase())
+        .map(r => r.scan_name);
+      const unique = uniquifyScanName(data.scan_name, existing);
+      if (unique !== data.scan_name) {
+        showToast(`Scan name '${data.scan_name}' already exists — auto-renamed to '${unique}'`);
+        data.scan_name = unique;
+        // Reflect the change in the form fields so the user sees it.
+        const hdr = document.getElementById('scanNameHeader');
+        const side = document.getElementById('scanName');
+        if (hdr) hdr.value = unique;
+        if (side) side.value = unique;
+      }
+    }
+  } catch (e) { /* non-fatal — proceed with the original name */ }
+
   try {
     const resp = await fetch('/api/scan/configure', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
@@ -860,6 +951,7 @@ async function configureScan() {
       const saveBody = await saveResp.json();
       if (saveResp.ok) {
         showToast(`Configured — record saved: ${saveBody.filename}. Click Start to begin.`);
+        refreshHistory();
       } else {
         showToast('Configured, but record save failed: ' + (saveBody.detail || 'Unknown'), true);
       }
@@ -1646,6 +1738,98 @@ async function loadRecords() {
 }
 
 /* ============================================================================
+   Scan history column — lists all saved records in the current project,
+   newest first. Clicking an item loads that scan's image into the viewer.
+============================================================================ */
+
+// 400 ms debounce so typing 'VB20260424' doesn't fire 10 requests.
+let _historyDebounceTimer = null;
+function refreshHistoryDebounced() {
+  clearTimeout(_historyDebounceTimer);
+  _historyDebounceTimer = setTimeout(refreshHistory, 400);
+}
+
+async function refreshHistory() {
+  const project = (document.getElementById('project')?.value || '').trim();
+  const projEl = document.getElementById('historyProject');
+  const listEl = document.getElementById('historyList');
+  const countEl = document.getElementById('historyCount');
+
+  projEl.textContent = project || '(no project)';
+
+  if (!project) {
+    listEl.innerHTML = '<div class="history-empty">Enter a project name to see history.</div>';
+    countEl.textContent = '0';
+    return;
+  }
+
+  try {
+    const resp = await fetch('/api/records');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const recs = await resp.json();
+    const mine = recs.filter(r =>
+      (r.project || '').trim().toLowerCase() === project.toLowerCase()
+    );
+    countEl.textContent = String(mine.length);
+    if (mine.length === 0) {
+      listEl.innerHTML = '<div class="history-empty">No scans saved yet for this project.</div>';
+      return;
+    }
+    listEl.innerHTML = mine.map(renderHistoryItem).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div class="history-empty">Could not load history: ${_esc(e.message)}</div>`;
+    countEl.textContent = '0';
+  }
+}
+
+function renderHistoryItem(r) {
+  const s = r.scan_settings || {};
+  const bits = [];
+  if (s.resolution_um != null) bits.push(`${s.resolution_um} µm`);
+  if (s.quality) bits.push(_esc(s.quality));
+  if (s.intensity_700 != null || s.intensity_800 != null) {
+    bits.push(`700:${s.intensity_700 ?? '–'} / 800:${s.intensity_800 ?? '–'}`);
+  }
+  if (s.width_cm != null && s.height_cm != null) bits.push(`${s.width_cm}×${s.height_cm} cm`);
+  if (s.focus_offset_mm != null) bits.push(`focus ${s.focus_offset_mm}`);
+
+  const metaHtml = bits.length
+    ? bits.map(b => `<span>${b}</span>`).join('<span class="sep">·</span>')
+    : '<span class="sep">no settings recorded</span>';
+
+  const time = r.timestamp ? r.timestamp.replace('T', ' ').slice(0, 19) : '';
+  const isActive = r.scan_name === ChannelCache.scan_name;
+  const group = r.scan_group || LOCKED_GROUP;
+
+  return `<div class="history-item${isActive ? ' active' : ''}"
+               onclick="loadHistoricalScan('${_esc(r.scan_name)}', '${_esc(group)}')">
+    <div class="name">${_esc(r.scan_name || '(unnamed)')}</div>
+    <div class="meta">${metaHtml}</div>
+    <div class="time">${_esc(time)}${r.operator ? ' · ' + _esc(r.operator) : ''}</div>
+  </div>`;
+}
+
+async function loadHistoricalScan(scanName, group) {
+  if (!scanName) return;
+  try {
+    const url = `/api/image/channels?scan=${encodeURIComponent(scanName)}&group=${encodeURIComponent(group)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`HTTP ${resp.status} — ${body.slice(0, 100)}`);
+    }
+    const envelope = await resp.json();
+    await populateChannelCache(envelope);
+    if (ChannelCache.ch700) setActiveView('700');
+    else if (ChannelCache.ch800) setActiveView('800');
+    refreshHistory();  // update the active highlight
+    showToast(`Loaded ${scanName}`);
+  } catch (e) {
+    showToast(`Could not load ${scanName}: ${e.message}`, true);
+  }
+}
+
+/* ============================================================================
    Experiment ID stamp — auto-generated on page load.
    Format: EXP-YYYYMMDD-HHMMSS. Read-only so every saved record carries a
    stable, unambiguous identifier derived from wall-clock time.
@@ -1727,6 +1911,7 @@ async function init() {
   connectWS();
   startSafetyNet();
   applyScanSession();
+  refreshHistory();
 }
 
 init();

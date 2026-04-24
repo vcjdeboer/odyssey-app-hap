@@ -777,18 +777,35 @@ async def get_current_record():
 
 @app.get("/api/records")
 async def list_records():
-    """List all saved records."""
+    """List recent run records as summaries.
+
+    Returns the metadata needed by the sidebar history panel: identity,
+    timestamp, and a condensed subset of scan_settings (resolution,
+    quality, intensities, scan area). The history panel renders these
+    without having to fetch each full record.
+    """
     files = sorted(RECORDS_DIR.glob("*.json"), reverse=True)
     records = []
     for f in files[:50]:
         try:
             d = json.loads(f.read_text())
+            s = d.get("scan_settings", {}) or {}
             records.append({
                 "filename": f.name,
                 "scan_name": d.get("scan_name", ""),
                 "operator": d.get("operator", ""),
                 "timestamp": d.get("scan_timestamp", ""),
                 "project": d.get("project", ""),
+                "scan_group": d.get("scan_group", ""),
+                "scan_settings": {
+                    "resolution_um": s.get("resolution_um"),
+                    "quality": s.get("quality"),
+                    "intensity_700": s.get("intensity_700"),
+                    "intensity_800": s.get("intensity_800"),
+                    "width_cm": s.get("width_cm"),
+                    "height_cm": s.get("height_cm"),
+                    "focus_offset_mm": s.get("focus_offset_mm"),
+                },
             })
         except Exception:
             continue
