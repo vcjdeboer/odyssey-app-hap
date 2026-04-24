@@ -20,6 +20,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +36,10 @@ from odyssey_app.metadata import WesternBlotRecord
 try:
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from plr_v4.odyssey.connection import OdysseyConnection, ScanParameters
+    from plr_v4.odyssey.connection import (
+        OdysseyConnection, ScanParameters, DEFAULT_GROUP,
+    )
+    from plr_v4.odyssey.status_backend import normalize_state, InstrumentState
     from plr_v4.capabilities.scanning import Scanning
     from plr_v4.capabilities.image_retrieval import ImageRetrieval
     from plr_v4.capabilities.instrument_status import InstrumentStatusCapability
@@ -48,6 +52,9 @@ try:
     PLR_AVAILABLE = True
 except ImportError:
     PLR_AVAILABLE = False
+    DEFAULT_GROUP = "odyssey"
+    def normalize_state(raw: str) -> str:
+        return raw or "Idle"
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -105,7 +112,13 @@ _status_driver = None
 
 @app.on_event("startup")
 async def startup():
-    """Initialize PLR driver — real or simulated."""
+    """Initialize PLR driver — real or simulated.
+
+    FR-027: credentials come from ODYSSEY_USER/ODYSSEY_PASS env vars via
+    OdysseyConnection.from_env(). If ODYSSEY_HOST is set but credentials
+    are missing, we fail loudly with a log message and fall back to
+    simulated mode rather than silently connecting with defaults.
+    """
     global _odyssey_connection, _sim_state
     global _scan_driver, _image_driver, _status_driver
 
@@ -114,12 +127,17 @@ async def startup():
 
     host = os.environ.get("ODYSSEY_HOST", "")
     if host:
-        # Real instrument connection
-        password = os.environ.get("ODYSSEY_PASS", "admin")
-        username = os.environ.get("ODYSSEY_USER", "admin")
-        _odyssey_connection = OdysseyConnection(
-            host=host, username=username, password=password
-        )
+        # Real instrument connection (FR-027)
+        try:
+            _odyssey_connection = OdysseyConnection.from_env(host=host)
+        except ValueError as e:
+            logging.warning(
+                "Real-hardware mode requested (ODYSSEY_HOST=%s) but "
+                "credentials are missing: %s. Falling back to simulated mode.",
+                host, e,
+            )
+            _setup_simulated()
+            return
         try:
             await _odyssey_connection.setup()
             from plr_v4.odyssey.scan_backend import OdysseyScanBackend
@@ -210,13 +228,24 @@ async def index():
 
 @app.post("/api/scan/configure")
 async def configure_scan(data: dict):
-    """Configure a scan with parameters from the GUI."""
+    """Configure a scan with parameters from the GUI.
+
+    FR-018: scan_group must be 'odyssey'. This is enforced server-side
+    so that direct API clients (curl, tests, dev-tools) cannot bypass
+    the GUI's locked-group field.
+    """
     global _scan_state
+    group = data.get("scan_group", DEFAULT_GROUP)
+    if group != DEFAULT_GROUP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scan_group must be '{DEFAULT_GROUP}' on this instrument",
+        )
     try:
         scan_settings = data.get("scan_settings", {})
         params = ScanParameters(
             name=data.get("scan_name", "scan"),
-            group=data.get("scan_group", "public"),
+            group=group,
             resolution=str(scan_settings.get("resolution_um", 169)),
             quality=scan_settings.get("quality", "medium"),
             intensity_700=str(scan_settings.get("intensity_700", 5)),
@@ -239,8 +268,28 @@ async def configure_scan(data: dict):
         _scan_state["current_group"] = params.group
         await _broadcast({"type": "status", **_scan_state})
         return {"status": "ok", "message": "Scan configured"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+_TERMINAL_STATES = {"Completed", "Stopped", "Failed"}
+
+
+async def _emit_scan_complete(outcome: str) -> None:
+    """Broadcast exactly one scan_complete message.
+
+    ``outcome`` is the terminal state in lowercase, per the WS contract
+    (see specs/022-odyssey-app-lab-fixes/contracts/odyssey-app-http-api.md).
+    """
+    await _broadcast({
+        "type": "scan_complete",
+        "scan": _scan_state.get("current_scan", ""),
+        "group": _scan_state.get("current_group", DEFAULT_GROUP),
+        "outcome": outcome.lower(),
+        "channels_available": ["700", "800"],
+    })
 
 
 @app.post("/api/scan/start")
@@ -256,15 +305,15 @@ async def start_scan():
         await _broadcast({"type": "status", **_scan_state})
 
         if _sim_state is not None:
-            # Simulated: complete immediately
-            _scan_state["state"] = "Idle"
+            # Simulated: the simulator's start() has already run the scan
+            # synchronously (ticks with asyncio.sleep(0.05)). Reflect the
+            # Completed state in the broadcast.
+            _scan_state["state"] = "Completed"
             _scan_state["progress"] = 100
             await _broadcast({"type": "status", **_scan_state})
-            await _broadcast({"type": "scan_complete",
-                              "scan": _scan_state["current_scan"],
-                              "group": _scan_state["current_group"]})
+            await _emit_scan_complete("completed")
         elif _status_driver and _odyssey_connection:
-            # Real instrument: poll for completion in background
+            # Real instrument: poll for completion in background.
             asyncio.create_task(_poll_scan_progress())
 
         return {"status": "ok", "message": "Scan started"}
@@ -273,47 +322,86 @@ async def start_scan():
 
 
 async def _poll_scan_progress():
-    """Background task: poll Odyssey status until scan finishes."""
+    """Background task: poll Odyssey status until scan reaches a terminal state.
+
+    Emits exactly one scan_complete broadcast on the first transition into
+    Completed, Stopped, or Failed (FR-001, FR-002, plan D9). Unknown states
+    are logged and mapped to 'Failed' by normalize_state in the status
+    backend, so this loop only ever sees canonical InstrumentState values.
+    """
     global _scan_state
     logging.info("Starting scan progress polling...")
+    emitted = False
     while True:
         await asyncio.sleep(3)
         try:
-            logging.info("Polling status...")
             status = await _status_driver.read()
-            _scan_state["state"] = status.state
+            state = normalize_state(status.state)
+            _scan_state["state"] = state
             _scan_state["progress"] = status.progress
             _scan_state["time_remaining"] = status.time_remaining
             _scan_state["lid_open"] = status.lid_open
             await _broadcast({"type": "status", **_scan_state})
 
-            if status.state == "Idle" and _scan_state.get("current_scan"):
-                _scan_state["progress"] = 100
-                await _broadcast({"type": "status", **_scan_state})
-                await _broadcast({
-                    "type": "scan_complete",
-                    "scan": _scan_state["current_scan"],
-                    "group": _scan_state["current_group"],
-                })
+            if state in _TERMINAL_STATES and not emitted:
+                if state == "Completed":
+                    _scan_state["progress"] = 100
+                    await _broadcast({"type": "status", **_scan_state})
+                await _emit_scan_complete(state)
+                emitted = True
                 return
         except Exception as e:
             logging.error("Poll error: %s", e, exc_info=True)
+            # Treat poll crash as a terminal failure so the UI unblocks.
+            _scan_state["state"] = "Failed"
+            await _broadcast({"type": "status", **_scan_state})
+            if not emitted:
+                await _emit_scan_complete("failed")
             return
 
 
 @app.post("/api/scan/stop")
 async def stop_scan():
-    """Stop the current scan (saves files)."""
+    """Stop the current scan — saves partial image (FR-021).
+
+    Returns {"status": "stopped", "partial": bool, "channels_available": [...]}.
+    Against the real instrument this invokes driver.backend.stop_and_save();
+    against the simulator it calls backend.stop() and derives the partial
+    flag from OdysseyState.stop_was_partial.
+    """
     global _scan_state
     try:
+        partial = False
+        channels_available: list[str] = []
         if _scan_driver:
-            await _scan_driver.stop_scan()
-        _scan_state["state"] = "Idle"
+            backend = _scan_driver.backend
+            if hasattr(backend, "stop_and_save"):
+                result = await backend.stop_and_save()
+                partial = bool(result.partial)
+                channels_available = [str(c) for c in result.channels_available]
+            else:
+                # Simulated path
+                await _scan_driver.stop_scan()
+                if _sim_state is not None:
+                    partial = bool(_sim_state.stop_was_partial)
+                    if partial:
+                        channels_available = ["700", "800"]
+
+        _scan_state["state"] = "Stopped"
         _scan_state["progress"] = 0
         await _broadcast({"type": "status", **_scan_state})
-        return {"status": "ok"}
+        await _emit_scan_complete("stopped")
+
+        return {
+            "status": "stopped",
+            "partial": partial,
+            "channels_available": channels_available,
+        }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logging.error("Stop error: %s", e, exc_info=True)
+        _scan_state["state"] = "Failed"
+        await _broadcast({"type": "status", **_scan_state})
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/scan/pause")
@@ -332,7 +420,7 @@ async def pause_scan():
 
 @app.post("/api/scan/cancel")
 async def cancel_scan():
-    """Cancel the current scan (no save)."""
+    """Cancel the current scan (no save, no partial image)."""
     global _scan_state
     try:
         if _scan_driver:
@@ -378,6 +466,91 @@ async def estimate_time(
 
 
 # -- Image API --
+
+async def _render_single_channel(group: str, scan: str, channel: int) -> bytes:
+    """Render one channel to PNG bytes.
+
+    Real mode: fetch the server-side JPEG preview for this channel only.
+    Simulated mode: generate a placeholder coloured per channel.
+    Returns empty bytes if the channel is not available.
+    """
+    if _image_driver and _odyssey_connection and hasattr(
+        _image_driver.backend, "get_preview"
+    ):
+        try:
+            return await _image_driver.backend.get_preview(
+                group, scan,
+                contrast_700=5, contrast_800=5,
+                channels=str(channel),
+                background="black",
+            )
+        except Exception as e:
+            logging.info("Channel %d not available: %s", channel, e)
+            return b""
+    # Simulated
+    if not PIL_AVAILABLE:
+        return b""
+    color = (255, 100, 100) if channel == 700 else (100, 255, 100)
+    img = Image.new("RGB", (400, 300), (10, 10, 20))
+    draw = ImageDraw.Draw(img)
+    import random
+    random.seed(channel)
+    for lane in range(6):
+        x = 50 + lane * 55
+        for band in range(3):
+            y = 60 + band * 70 + random.randint(-10, 10)
+            w = 30 + random.randint(-5, 5)
+            h = 8 + random.randint(-2, 4)
+            intensity = random.randint(80, 255)
+            shade = tuple(min(255, int(c * intensity / 255)) for c in color)
+            draw.ellipse([(x, y), (x + w, y + h)], fill=shade)
+    draw.text((150, 280), f"Simulated {channel}nm", fill=(60, 60, 60))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@app.get("/api/image/channels")
+async def get_channels(scan: str, group: str = DEFAULT_GROUP):
+    """Return both channel images in one response (FR-005).
+
+    The browser calls this exactly once per scan_complete event and caches
+    the bytes as ImageBitmaps — subsequent view switches (700 / 800 /
+    Overlay) are served from the local cache with zero server round-trips
+    (SC-003).
+
+    Response envelope per specs/022-odyssey-app-lab-fixes/contracts/
+    odyssey-app-http-api.md: {scan, group, ch700, ch800, fetched_at}.
+    Each channel is either {"format": "image/png", "bytes_base64": "..."}
+    or null if unavailable.
+    """
+    if group != DEFAULT_GROUP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scan_group must be '{DEFAULT_GROUP}' on this instrument",
+        )
+    if not scan:
+        raise HTTPException(status_code=400, detail="scan parameter required")
+
+    ch700_bytes = await _render_single_channel(group, scan, 700)
+    ch800_bytes = await _render_single_channel(group, scan, 800)
+
+    def _encode(b: bytes) -> Optional[dict]:
+        if not b:
+            return None
+        return {
+            "format": "image/png",
+            "bytes_base64": base64.b64encode(b).decode("ascii"),
+        }
+
+    return {
+        "scan": scan,
+        "group": group,
+        "ch700": _encode(ch700_bytes),
+        "ch800": _encode(ch800_bytes),
+        "fetched_at": datetime.now().isoformat(),
+    }
+
 
 @app.get("/api/image/preview")
 async def get_preview(
