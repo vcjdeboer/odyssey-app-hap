@@ -385,16 +385,30 @@ async def _run_sim_scan():
 
 
 async def _poll_scan_progress():
-    """Background task: poll Odyssey status until scan reaches a terminal state.
+    """Background task: poll Odyssey status until the scan reaches a *fresh*
+    terminal state.
 
-    Emits exactly one scan_complete broadcast on the first transition into
-    Completed, Stopped, or Failed (FR-001, FR-002, plan D9). Unknown states
-    are logged and mapped to 'Failed' by normalize_state in the status
-    backend, so this loop only ever sees canonical InstrumentState values.
+    Implements the stale-terminal-state guard (Pattern 1 from
+    docs/odyssey-http-patterns.md). Without it, this poller could fire
+    instantly with the previous scan's terminal state still in place
+    and emit a bogus scan_complete. With it, we capture the initial
+    state and require a transition out of any terminal before the next
+    terminal observation counts as 'this scan is done'.
     """
     global _scan_state
     logging.info("Starting scan progress polling...")
     emitted = False
+
+    # Capture initial state. If it was already terminal, demand a
+    # state change before we accept the next terminal as fresh.
+    try:
+        initial = await _status_driver.read()
+        require_state_change = (
+            normalize_state(initial.state) in _TERMINAL_STATES
+        )
+    except Exception:
+        require_state_change = False  # Read fails will be caught in the loop.
+
     while True:
         await asyncio.sleep(3)
         try:
@@ -406,7 +420,16 @@ async def _poll_scan_progress():
             _scan_state["lid_open"] = status.lid_open
             await _broadcast({"type": "status", **_scan_state})
 
-            if state in _TERMINAL_STATES and not emitted:
+            if state not in _TERMINAL_STATES:
+                require_state_change = False  # saw a transition — next terminal is fresh
+                continue
+
+            if require_state_change:
+                # Stale terminal — keep polling until the instrument
+                # actually moves out of this state.
+                continue
+
+            if not emitted:
                 if state == "Completed":
                     _scan_state["progress"] = 100
                     await _broadcast({"type": "status", **_scan_state})
