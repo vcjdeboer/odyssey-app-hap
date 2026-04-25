@@ -295,7 +295,14 @@ async def configure_scan(data: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-_TERMINAL_STATES = {"Completed", "Stopped", "Failed"}
+# Terminal states. 'Idle' is included because real Odyssey hardware
+# returns to Idle when a scan finishes — it does NOT use 'Completed'
+# (which is a simulator convention). The fresh-terminal-state guard
+# in _poll_scan_progress prevents a stale-Idle from firing scan_complete
+# spuriously: we only accept Idle as 'this scan finished' AFTER we've
+# observed the instrument in a non-terminal state (Scanning, etc.).
+# See docs/odyssey-http-patterns.md Pattern 1.
+_TERMINAL_STATES = {"Idle", "Completed", "Stopped", "Failed"}
 
 
 async def _emit_scan_complete(outcome: str) -> None:
@@ -430,10 +437,15 @@ async def _poll_scan_progress():
                 continue
 
             if not emitted:
-                if state == "Completed":
+                # Real hw signals scan-finished by going back to Idle;
+                # sim signals it as Completed. Both should fire as
+                # outcome='completed' so the GUI's onScanComplete path
+                # (which auto-loads the image) treats them identically.
+                if state in {"Idle", "Completed"}:
                     _scan_state["progress"] = 100
                     await _broadcast({"type": "status", **_scan_state})
-                await _emit_scan_complete(state)
+                outcome = "completed" if state in {"Idle", "Completed"} else state
+                await _emit_scan_complete(outcome)
                 emitted = True
                 return
         except Exception as e:
