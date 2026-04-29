@@ -37,12 +37,12 @@ try:
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from plr_v4.odyssey.connection import (
-        OdysseyConnection, ScanParameters, DEFAULT_GROUP,
+        OdysseyDriver, ScanParameters, DEFAULT_GROUP,
     )
     from plr_v4.odyssey.status_backend import normalize_state, InstrumentState
     from plr_v4.capabilities.scanning import Scanning
     from plr_v4.capabilities.image_retrieval import ImageRetrieval
-    from plr_v4.capabilities.instrument_status import InstrumentStatusCapability
+    from plr_v4.capabilities.instrument_status import InstrumentStatus
     from plr_v4.odyssey.simulated import (
         OdysseyState,
         OdysseyScanSimulated,
@@ -122,7 +122,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # -- PLR driver (simulated or real) --
-_odyssey_connection = None
+_odyssey_driver = None
 _sim_state = None
 _scan_driver = None
 _image_driver = None
@@ -134,11 +134,11 @@ async def startup():
     """Initialize PLR driver — real or simulated.
 
     FR-027: credentials come from ODYSSEY_USER/ODYSSEY_PASS env vars via
-    OdysseyConnection.from_env(). If ODYSSEY_HOST is set but credentials
+    OdysseyDriver.from_env(). If ODYSSEY_HOST is set but credentials
     are missing, we fail loudly with a log message and fall back to
     simulated mode rather than silently connecting with defaults.
     """
-    global _odyssey_connection, _sim_state
+    global _odyssey_driver, _sim_state
     global _scan_driver, _image_driver, _status_driver
 
     if not PLR_AVAILABLE:
@@ -148,7 +148,7 @@ async def startup():
     if host:
         # Real instrument connection (FR-027)
         try:
-            _odyssey_connection = OdysseyConnection.from_env(host=host)
+            _odyssey_driver = OdysseyDriver.from_env(host=host)
         except ValueError as e:
             logging.warning(
                 "Real-hardware mode requested (ODYSSEY_HOST=%s) but "
@@ -158,14 +158,14 @@ async def startup():
             _setup_simulated()
             return
         try:
-            await _odyssey_connection.setup()
+            await _odyssey_driver.setup()
             from plr_v4.odyssey.scan_backend import OdysseyScanBackend
             from plr_v4.odyssey.image_backend import OdysseyImageBackend
             from plr_v4.odyssey.status_backend import OdysseyStatusBackend
-            _scan_driver = Scanning(backend=OdysseyScanBackend(_odyssey_connection))
-            _image_driver = ImageRetrieval(backend=OdysseyImageBackend(_odyssey_connection))
-            _status_driver = InstrumentStatusCapability(
-                backend=OdysseyStatusBackend(_odyssey_connection)
+            _scan_driver = Scanning(backend=OdysseyScanBackend(_odyssey_driver))
+            _image_driver = ImageRetrieval(backend=OdysseyImageBackend(_odyssey_driver))
+            _status_driver = InstrumentStatus(
+                backend=OdysseyStatusBackend(_odyssey_driver)
             )
             await _scan_driver.setup()
             _scan_driver._setup_finished = True
@@ -176,7 +176,7 @@ async def startup():
         except Exception as e:
             print(f"WARNING: Could not connect to Odyssey at {host}: {e}")
             print("Falling back to simulated mode.")
-            _odyssey_connection = None
+            _odyssey_driver = None
             _setup_simulated()
     else:
         _setup_simulated()
@@ -188,7 +188,7 @@ def _setup_simulated():
     _sim_state = OdysseyState()
     _scan_driver = Scanning(backend=OdysseyScanSimulated(_sim_state))
     _image_driver = ImageRetrieval(backend=OdysseyImageSimulated(_sim_state))
-    _status_driver = InstrumentStatusCapability(
+    _status_driver = InstrumentStatus(
         backend=OdysseyStatusSimulated(_sim_state)
     )
     _scan_driver._setup_finished = True
@@ -199,8 +199,8 @@ def _setup_simulated():
 @app.on_event("shutdown")
 async def shutdown():
     """Close PLR connection."""
-    if _odyssey_connection is not None:
-        await _odyssey_connection.stop()
+    if _odyssey_driver is not None:
+        await _odyssey_driver.stop()
 
 
 # -- WebSocket for live updates --
@@ -339,7 +339,7 @@ async def start_scan():
 
         if _sim_state is not None:
             asyncio.create_task(_run_sim_scan())
-        elif _status_driver and _odyssey_connection:
+        elif _status_driver and _odyssey_driver:
             # Real: fire the start command, then poll for progress.
             await _scan_driver.start()
             asyncio.create_task(_poll_scan_progress())
@@ -534,7 +534,7 @@ async def cancel_scan():
 @app.get("/api/scan/status")
 async def scan_status():
     """Get current scan status."""
-    if _status_driver and _odyssey_connection:
+    if _status_driver and _odyssey_driver:
         try:
             status = await _status_driver.read()
             _scan_state["state"] = status.state
@@ -553,7 +553,7 @@ async def estimate_time(
     x0: int = 0, y0: int = 0, width: int = 10, height: int = 10,
 ):
     """Estimate scan time without configuring."""
-    if _scan_driver and _odyssey_connection and hasattr(_scan_driver.backend, "estimate_time"):
+    if _scan_driver and _odyssey_driver and hasattr(_scan_driver.backend, "estimate_time"):
         params = ScanParameters(
             resolution=resolution, quality=quality,
             origin_x=x0, origin_y=y0, width=width, height=height,
@@ -572,7 +572,7 @@ async def _render_single_channel(group: str, scan: str, channel: int) -> bytes:
     Simulated mode: generate a placeholder coloured per channel.
     Returns empty bytes if the channel is not available.
     """
-    if _image_driver and _odyssey_connection and hasattr(
+    if _image_driver and _odyssey_driver and hasattr(
         _image_driver.backend, "get_preview"
     ):
         try:
@@ -657,7 +657,7 @@ async def get_preview(
     channels: str = "700 800", background: str = "black",
 ):
     """Get a JPEG preview from the instrument."""
-    if _image_driver and _odyssey_connection and hasattr(_image_driver.backend, "get_preview"):
+    if _image_driver and _odyssey_driver and hasattr(_image_driver.backend, "get_preview"):
         try:
             jpeg_bytes = await _image_driver.backend.get_preview(
                 group, scan,
@@ -678,7 +678,7 @@ async def download_tiff(
     channel: int, group: str = "public", scan: str = "",
 ):
     """Download raw TIFF for one channel (700 or 800)."""
-    if _image_driver and _odyssey_connection and hasattr(_image_driver.backend, "download_channel"):
+    if _image_driver and _odyssey_driver and hasattr(_image_driver.backend, "download_channel"):
         try:
             tiff_bytes = await _image_driver.backend.download_channel(group, scan, channel)
             return Response(
@@ -1024,7 +1024,7 @@ async def _export_records_matching(
 
             tiff_wrote = False
             if (
-                _image_driver and _odyssey_connection
+                _image_driver and _odyssey_driver
                 and hasattr(_image_driver.backend, "download_channel")
             ):
                 for ch in (700, 800):
@@ -1077,9 +1077,9 @@ async def _export_records_matching(
 @app.get("/api/connection")
 async def connection_info():
     """Report connection mode (real vs simulated)."""
-    if _odyssey_connection:
+    if _odyssey_driver:
         return {
             "mode": "real",
-            "host": _odyssey_connection.base_url,
+            "host": _odyssey_driver.base_url,
         }
     return {"mode": "simulated"}
