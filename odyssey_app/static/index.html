@@ -433,7 +433,8 @@
       <option value="navy">Theme: Navy (dark)</option>
     </select>
     <span class="conn-badge" id="connBadge">simulated</span>
-    <span id="instrumentId">ODY-1576</span>
+    <a id="instrumentPid" href="#" target="_blank" rel="noopener"
+       title="Persistent instrument identifier — opens the b2inst landing page">—</a>
     <span><span class="status-dot" id="statusDot"></span> <span id="statusText">Idle</span></span>
   </div>
 </header>
@@ -2043,6 +2044,14 @@ async function init() {
       badge.classList.add('real');
     } else {
       badge.textContent = 'simulated';
+    }
+    const pidLink = document.getElementById('instrumentPid');
+    if (pidLink && info.instrument_pid) {
+      // Show the short Handle suffix; full PID + landing page reachable via the link.
+      const short = info.instrument_pid.replace(/^https?:\/\/hdl\.handle\.net\//, 'hdl:');
+      pidLink.textContent = short;
+      pidLink.href = info.instrument_landing_page || info.instrument_pid;
+      pidLink.title = `${info.instrument_name || ''}\nPID: ${info.instrument_pid}`.trim();
     }
   } catch (e) {}
 

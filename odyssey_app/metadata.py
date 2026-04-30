@@ -13,6 +13,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Optional
 
+from odyssey_app.instrument import ODYSSEY_INSTRUMENT_PID
+
 
 @dataclass
 class Antibody:
@@ -77,7 +79,9 @@ class WesternBlotRecord:
     """
 
     # -- instrument identity (PIDInst) --
-    instrument_pid: str = ""          # serial number, e.g. "ODY-1576"
+    # Defaults to the configured instrument PID (Handle URI) for this
+    # lab's Odyssey unit; see odyssey_app/instrument.py.
+    instrument_pid: str = field(default_factory=lambda: ODYSSEY_INSTRUMENT_PID)
     instrument_model: str = "Odyssey Classic 9120"
     microscope_serial: str = ""
     software_version: str = ""

@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from odyssey_app.metadata import WesternBlotRecord
+from odyssey_app.instrument import ODYSSEY_INSTANCE_CARD
 
 # Conditionally import PLR + image libraries
 try:
@@ -40,6 +41,11 @@ try:
         OdysseyDriver, ScanParameters, DEFAULT_GROUP,
     )
     from plr_v4.odyssey.status_backend import normalize_state, InstrumentState
+    from plr_v4.odyssey.device_card import ODYSSEY_CLASSIC_BASE
+    from plr_v4.odyssey.tagging import (
+        build_identity_description,
+        tag_tiff_with_identity,
+    )
     from plr_v4.capabilities.scanning import Scanning
     from plr_v4.capabilities.image_retrieval import ImageRetrieval
     from plr_v4.capabilities.instrument_status import InstrumentStatus
@@ -50,11 +56,17 @@ try:
         OdysseyStatusSimulated,
     )
     PLR_AVAILABLE = True
+    # Merged effective card for THIS lab's unit (model-base + instance).
+    # Read by the API endpoints to populate identity in TIFFs/JSON/UI.
+    _DEVICE_CARD = ODYSSEY_CLASSIC_BASE.merge(ODYSSEY_INSTANCE_CARD)
 except ImportError:
     PLR_AVAILABLE = False
     DEFAULT_GROUP = "odyssey"
+    _DEVICE_CARD = None
     def normalize_state(raw: str) -> str:
         return raw or "Idle"
+    def build_identity_description(*a, **kw): return "{}"
+    def tag_tiff_with_identity(raw, *a, **kw): return raw
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -80,6 +92,36 @@ def _safe(s: str, fallback: str = "x") -> str:
     """Make a string safe for use as a filesystem segment."""
     cleaned = "".join(c if c.isalnum() or c in "-_" else "_" for c in (s or ""))
     return cleaned or fallback
+
+
+def _identity() -> dict:
+    """Return the active card's identity dict (or empty dict if no card)."""
+    return dict((_DEVICE_CARD.identity if _DEVICE_CARD is not None else {}) or {})
+
+
+def _tag_tiff(
+    raw_bytes: bytes,
+    *,
+    scan_name: str = "",
+    channel: Optional[int] = None,
+) -> bytes:
+    """Thin app-side wrapper: stamp the active card's identity into a TIFF."""
+    if _DEVICE_CARD is None:
+        return raw_bytes
+    return tag_tiff_with_identity(
+        raw_bytes, _DEVICE_CARD,
+        scan_name=scan_name, channel=channel,
+        software_tag="Odyssey Western Blot Imager (PLR_v4)",
+    )
+
+
+def _identity_description(scan_name: str = "", channel: Optional[int] = None) -> str:
+    """Thin app-side wrapper: identity JSON blob for TIFF tag 270."""
+    if _DEVICE_CARD is None:
+        return "{}"
+    return build_identity_description(
+        _DEVICE_CARD, scan_name=scan_name, channel=channel,
+    )
 
 
 def _list_attachments(experiment_id: str, scan_name: str) -> list[str]:
@@ -681,6 +723,9 @@ async def download_tiff(
     if _image_driver and _odyssey_driver and hasattr(_image_driver.backend, "download_channel"):
         try:
             tiff_bytes = await _image_driver.backend.download_channel(group, scan, channel)
+            tiff_bytes = _tag_tiff(
+                tiff_bytes, scan_name=scan, channel=channel,
+            )
             return Response(
                 content=tiff_bytes,
                 media_type="image/tiff",
@@ -760,10 +805,20 @@ async def export_image(data: dict):
 
     buf = io.BytesIO()
     if format == "tiff":
-        img.save(buf, format="TIFF")
+        img.save(buf, format="TIFF", tiffinfo={
+            270: _identity_description(scan_name=scan_name),
+            305: "Odyssey Western Blot Imager (PLR_v4)",
+        })
         ext = "tif"
     else:
-        img.save(buf, format="PNG")
+        # PNG: stash PID in tEXt chunks via PngInfo.
+        from PIL.PngImagePlugin import PngInfo
+        pnginfo = PngInfo()
+        for k, v in _identity().items():
+            pnginfo.add_text(f"instrument_{k}", str(v))
+        if scan_name:
+            pnginfo.add_text("scan_name", scan_name)
+        img.save(buf, format="PNG", pnginfo=pnginfo)
         ext = "png"
     buf.seek(0)
     blob = buf.getvalue()
@@ -842,6 +897,9 @@ async def save_record(data: dict):
     global _current_record
     try:
         record = WesternBlotRecord.from_dict(data)
+        # Honor an explicitly-set PID, otherwise stamp the configured one.
+        if not record.instrument_pid.strip():
+            record.instrument_pid = _identity().get("pid", "")
         record.stamp_timestamp()
         _current_record = record
 
@@ -887,6 +945,7 @@ async def list_records():
                 "project": d.get("project", ""),
                 "experiment_id": d.get("experiment_id", ""),
                 "scan_group": d.get("scan_group", ""),
+                "instrument_pid": d.get("instrument_pid", ""),
                 "scan_settings": {
                     "resolution_um": s.get("resolution_um"),
                     "quality": s.get("quality"),
@@ -982,6 +1041,12 @@ async def _export_records_matching(
             f"Exported {datetime.now().isoformat(timespec='seconds')} from the Odyssey app.",
             f"Contains {len(matching)} scan record(s) where {label} = `{clean}`.",
             "",
+            "## Instrument",
+            "",
+            f"- {_identity().get('name', '(unset)')}",
+            f"- PID: <{_identity().get('pid', '(unset)')}>",
+            f"- Landing page: <{_identity().get('landing_page', '(unset)')}>",
+            "",
             "## Scans (newest first)",
             "",
         ]
@@ -1009,9 +1074,21 @@ async def _export_records_matching(
                   ""]
         return "\n".join(lines)
 
+    identity = _identity()
+    manifest = {
+        "instrument_pid": identity.get("pid", ""),
+        "instrument_landing_page": identity.get("landing_page", ""),
+        "instrument_name": identity.get("name", ""),
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "label": label,
+        "value": clean,
+        "scan_count": len(matching),
+    }
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(f"{root}/README.md", _readme())
+        z.writestr(f"{root}/manifest.json", json.dumps(manifest, indent=2))
 
         for f, d in matching:
             z.writestr(f"{root}/records/{f.name}", f.read_text())
@@ -1033,6 +1110,9 @@ async def _export_records_matching(
                             group, scan_name, ch,
                         )
                         if data:
+                            data = _tag_tiff(
+                                data, scan_name=scan_name, channel=ch,
+                            )
                             z.writestr(f"{root}/scans/{safe_scan}-{ch}.tif", data)
                             tiff_wrote = True
                     except Exception as e:
@@ -1076,10 +1156,13 @@ async def _export_records_matching(
 
 @app.get("/api/connection")
 async def connection_info():
-    """Report connection mode (real vs simulated)."""
+    """Report connection mode (real vs simulated) plus instrument identity."""
+    identity = _identity()
+    base = {
+        "instrument_pid": identity.get("pid", ""),
+        "instrument_landing_page": identity.get("landing_page", ""),
+        "instrument_name": identity.get("name", ""),
+    }
     if _odyssey_driver:
-        return {
-            "mode": "real",
-            "host": _odyssey_driver.base_url,
-        }
-    return {"mode": "simulated"}
+        return {**base, "mode": "real", "host": _odyssey_driver.base_url}
+    return {**base, "mode": "simulated"}
