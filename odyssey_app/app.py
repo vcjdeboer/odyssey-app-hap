@@ -172,6 +172,28 @@ _status_driver = None
 
 
 @app.on_event("startup")
+async def maybe_open_browser():
+    """When the launcher sets ``ODYSSEY_OPEN_BROWSER=1`` (run.bat in the
+    lab deploy), pop the UI in the default browser as soon as uvicorn
+    is ready. Skipped during dev so reload iterations don't keep
+    spawning tabs.
+    """
+    if os.environ.get("ODYSSEY_OPEN_BROWSER", "").strip() in ("", "0", "false", "False"):
+        return
+    import asyncio
+    import webbrowser
+
+    async def _open():
+        # Tiny delay so uvicorn has finished binding the port and the
+        # lifespan startup is past — otherwise the browser hits the
+        # window between bind and accept and shows a bare error page.
+        await asyncio.sleep(1.5)
+        webbrowser.open("http://localhost:8000")
+
+    asyncio.create_task(_open())
+
+
+@app.on_event("startup")
 async def startup():
     """Initialize PLR driver — real or simulated.
 
@@ -280,9 +302,26 @@ async def websocket_endpoint(ws: WebSocket):
 
 # -- Pages --
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def index():
-    return (STATIC_DIR / "index.html").read_text()
+    # Stream the bytes verbatim with an explicit UTF-8 charset. Going
+    # through ``read_text()`` decodes with the platform default — which
+    # is cp1252 on Windows — and mangles every non-ASCII glyph in the
+    # page (em-dash, ``×``, ``µ``, the lock emoji…) before the response
+    # ever leaves the server.
+    #
+    # Cache-Control: no-store forces Chrome to re-fetch on every page
+    # load. Without it, after a uvicorn restart the browser can keep
+    # serving the previous session's HTML+JS and the UI gets stuck
+    # against a server that has different routes — Configure clicks go
+    # to handlers that no longer exist, status updates don't arrive,
+    # and the user has to hard-refresh to recover. This is the pattern
+    # Vincent kept hitting in the lab.
+    return Response(
+        (STATIC_DIR / "index.html").read_bytes(),
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 # -- Scan API --
@@ -296,6 +335,18 @@ async def configure_scan(data: dict):
     the GUI's locked-group field.
     """
     global _scan_state
+    # In real-hardware mode, refuse to "succeed" before the startup hook
+    # has finished standing up the driver. Without this gate, the
+    # browser auto-launched by run.bat could fire Configure during the
+    # 1-3 s window where uvicorn has bound the port but the Odyssey
+    # session isn't ready yet — the handler used to fall through
+    # silently (no scanner sound) but happily flipped state to
+    # "Configured", forcing the user to refresh to recover.
+    if PLR_AVAILABLE and os.environ.get("ODYSSEY_HOST", "") and _scan_driver is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Instrument is still initializing — try again in a couple of seconds.",
+        )
     group = data.get("scan_group", DEFAULT_GROUP)
     if group != DEFAULT_GROUP:
         raise HTTPException(
@@ -1152,6 +1203,202 @@ async def _export_records_matching(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/diagnostics/probe")
+async def diagnostics_probe():
+    """Hit every candidate scan-related path and report what came back.
+
+    The Odyssey embedded server can mount the scan UI at different paths
+    depending on firmware (nonjava vs java) and version. When configure
+    is 404-ing, this endpoint tells us which paths the instrument
+    actually serves so we don't have to guess.
+
+    Probes are GETs (safe — no state change). For each path we record
+    HTTP status, Content-Type, response length, and the first 600 bytes
+    of the body. The scan-landing GETs include the full HTML so the
+    `<form action="...">` attribute is visible.
+    """
+    if _odyssey_driver is None:
+        return {"mode": "simulated", "note": "no instrument in this mode"}
+
+    candidates = [
+        # Most likely paths first — landing pages reveal form actions.
+        "/scanapp/scan/nonjava/",
+        "/scanapp/scan/java/",
+        "/scanapp/scan/",
+        "/scanapp/",
+        "/",
+        # Direct CGI endpoints — these tell us if config.pl exists at all.
+        "/scanapp/scan/nonjava/config.pl",
+        "/scanapp/scan/nonjava/configure.pl",
+        "/scanapp/scan/java/config.pl",
+        "/scanapp/scan/configure.pl",
+        # Status / utility endpoints — confirms reachability + session.
+        "/scanapp/util/status/",
+        "/scanapp/imaging/nonjava/info.pl",
+    ]
+
+    results = []
+    session = _odyssey_driver._check_session()
+    base = _odyssey_driver.base_url
+    for path in candidates:
+        url = f"{base}{path}"
+        try:
+            async with session.get(url, allow_redirects=False) as resp:
+                body = await resp.text()
+                results.append({
+                    "path": path,
+                    "http_status": resp.status,
+                    "content_type": resp.headers.get("Content-Type", ""),
+                    "location": resp.headers.get("Location", ""),
+                    "set_cookie": resp.headers.get("Set-Cookie", ""),
+                    "length": len(body),
+                    "body_head": body[:600],
+                })
+        except Exception as e:
+            results.append({
+                "path": path,
+                "error": f"{type(e).__name__}: {e}",
+            })
+    return {"mode": "real", "base_url": base, "probes": results}
+
+
+@app.get("/api/diagnostics/configure")
+async def diagnostics_configure():
+    """Return the last configure_scan() POST attempt — URL hit, HTTP
+    status returned, and the response body — alongside a fresh GET of
+    the scan landing page so the form's actual ``action=`` URL is
+    visible. Use when configure is silently failing or returning a 4xx.
+    """
+    if _odyssey_driver is None:
+        return {"mode": "simulated", "note": "no instrument in this mode"}
+    out = {
+        "mode": "real",
+        "last_configure": {
+            "url": getattr(_odyssey_driver, "_last_configure_url", ""),
+            "http_status": getattr(_odyssey_driver, "_last_configure_http", 0),
+            "body": getattr(_odyssey_driver, "_last_configure_body", ""),
+        },
+    }
+    # GET the scan landing page so we can see what URL its <form>
+    # element actually posts to. This is the authoritative answer to
+    # "what URL does configure go to" on this firmware.
+    try:
+        landing = await _odyssey_driver.get("/scanapp/scan/nonjava/")
+        out["scan_landing_html"] = landing
+    except Exception as e:
+        out["scan_landing_error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
+@app.get("/api/diagnostics/status")
+async def diagnostics_status():
+    """Return the raw status HTML from the instrument plus the parsed
+    fields, side by side. Open this in a browser when the parser is
+    misbehaving — no copy-paste from the terminal needed.
+
+    On real hardware: triggers a fresh status fetch, then surfaces
+    the cached raw HTML and HTTP status from the driver.
+    On simulated mode: returns a small synthetic record so the
+    endpoint shape is stable for the UI to consume.
+    """
+    if _odyssey_driver is None:
+        return {
+            "mode": "simulated",
+            "http_status": None,
+            "raw_html": "(simulated mode — no instrument page)",
+            "parsed": {
+                "state": "Idle", "current_user": "", "progress": "0",
+                "time_remaining": "", "lid_status": "closed",
+            },
+        }
+    try:
+        parsed = await _odyssey_driver.get_status()
+    except Exception as e:
+        return {
+            "mode": "real",
+            "error": f"{type(e).__name__}: {e}",
+            "http_status": getattr(_odyssey_driver, "_last_status_http", 0),
+            "raw_html": getattr(_odyssey_driver, "_last_status_html", ""),
+            "parsed": None,
+        }
+    return {
+        "mode": "real",
+        "http_status": _odyssey_driver._last_status_http,
+        "raw_html": _odyssey_driver._last_status_html,
+        "parsed": parsed,
+    }
+
+
+@app.post("/api/scan/reset")
+async def reset_instrument():
+    """Force the instrument back to Idle. Sends Cancel via the scan
+    capability, then a status-page force_stop, then re-reads state.
+
+    Each step is independently try/excepted so that a failure of one
+    doesn't prevent the next: cancel may 404 if the scanner thinks no
+    scan is in flight, but the status-page stop will still pull motor
+    movement / partial scans down. Returns the final observed state so
+    the UI can update its status display.
+    """
+    if _scan_driver is None:
+        return {"status": "no-op", "note": "no instrument in this mode"}
+
+    errors = []
+    try:
+        await _scan_driver.cancel()
+    except Exception as e:
+        errors.append(f"cancel: {type(e).__name__}: {e}")
+
+    if _status_driver is not None and hasattr(_status_driver.backend, "force_stop"):
+        try:
+            await _status_driver.backend.force_stop()
+        except Exception as e:
+            errors.append(f"force_stop: {type(e).__name__}: {e}")
+
+    final_state = "Unknown"
+    try:
+        if _status_driver is not None:
+            reading = await _status_driver.read()
+            final_state = reading.state
+    except Exception as e:
+        errors.append(f"read_status: {type(e).__name__}: {e}")
+
+    _scan_state["state"] = final_state
+    _scan_state["progress"] = 0
+    _scan_state["time_remaining"] = ""
+    await _broadcast({"type": "status", **_scan_state})
+
+    return {"status": "ok", "state": final_state, "warnings": errors}
+
+
+@app.post("/api/quit")
+async def quit_app():
+    """Graceful server shutdown initiated from the Quit button.
+
+    Refuses while a scan is actively in flight (Initializing / Scanning
+    / Paused). On approval: closes the driver, returns 200, then exits
+    the process from a slightly-delayed callback so the response has
+    time to flush to the client.
+    """
+    state = (_scan_state.get("state") or "Idle")
+    busy = {"Initializing", "Scanning", "Paused"}
+    if state in busy:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot quit while a scan is in progress (state={state}).",
+        )
+    if _odyssey_driver is not None:
+        try:
+            await _odyssey_driver.stop()
+        except Exception as e:
+            logging.warning("Error stopping driver during quit: %s", e)
+    # Defer the actual exit so this 200 response makes it back to the
+    # browser. os._exit skips the FastAPI shutdown lifespan, but the
+    # driver is already stopped above, so there's nothing left to clean.
+    asyncio.get_event_loop().call_later(0.3, lambda: os._exit(0))
+    return {"status": "stopping"}
 
 
 @app.get("/api/connection")

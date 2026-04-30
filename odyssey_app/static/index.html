@@ -436,6 +436,8 @@
     <a id="instrumentPid" href="#" target="_blank" rel="noopener"
        title="Persistent instrument identifier — opens the b2inst landing page">—</a>
     <span><span class="status-dot" id="statusDot"></span> <span id="statusText">Idle</span></span>
+    <button class="btn btn-small" id="btnQuit" onclick="quitApp()"
+            title="Stop the server cleanly and exit. Disabled while a scan is in progress.">Quit app</button>
   </div>
 </header>
 
@@ -616,6 +618,8 @@
             title="Stop the scan and save whatever has been acquired so far">Stop</button>
     <button class="btn btn-secondary" id="btnCancel" onclick="cancelScan()" disabled
             title="Cancel the scan and discard all data">Cancel</button>
+    <button class="btn btn-warning btn-small" id="btnReset" onclick="resetInstrument()"
+            title="Force the instrument back to Idle. Sends Cancel + a status-page stop. Use when the scanner sounds stuck after a scan completes, or when state is wedged.">Reset</button>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <span class="scan-status-text" id="scanStatusText">Idle</span>
   </div>
@@ -628,15 +632,19 @@
       <button class="view-btn ch800" id="btnView800" data-view="800" disabled>800</button>
       <button class="view-btn overlay" id="btnViewOverlay" data-view="overlay" disabled>Overlay</button>
     </div>
-    <div class="slider-group">
-      <label>Brightness</label>
-      <input type="range" id="brightness" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
-      <span class="val" id="brightnessVal">0</span>
+    <div class="slider-group" title="Brightness/contrast for the 700 nm channel only.
+Affects the 700 view and the 700-tinted layer in Overlay.">
+      <label>700 B/C</label>
+      <input type="range" id="brightness_700" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
+      <input type="range" id="contrast_700" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
+      <span class="val" id="bc700Val">0/0</span>
     </div>
-    <div class="slider-group">
-      <label>Contrast</label>
-      <input type="range" id="contrast" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
-      <span class="val" id="contrastVal">0</span>
+    <div class="slider-group" title="Brightness/contrast for the 800 nm channel only.
+Affects the 800 view and the 800-tinted layer in Overlay.">
+      <label>800 B/C</label>
+      <input type="range" id="brightness_800" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
+      <input type="range" id="contrast_800" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
+      <span class="val" id="bc800Val">0/0</span>
     </div>
     <button class="btn btn-small btn-secondary" id="btnInvert" onclick="invertImage()">Invert</button>
     <button class="btn btn-small btn-secondary" onclick="resetView()"
@@ -669,13 +677,12 @@
 
   <div class="export-bar">
     <label>Attach to experiment:</label>
-    <button class="btn btn-small btn-secondary" onclick="attachExport('png', true)"
+    <button class="btn btn-small btn-secondary attach-btn" onclick="attachExport('png', true)"
             title="Render the current view as PNG with a metadata footer and attach it to this scan. Bundled in the experiment ZIP.">PNG + footer</button>
-    <button class="btn btn-small btn-secondary" onclick="attachExport('png', false)"
+    <button class="btn btn-small btn-secondary attach-btn" onclick="attachExport('png', false)"
             title="Render the current view as a clean PNG (no footer) and attach it to this scan. Bundled in the experiment ZIP.">PNG clean</button>
-    <button class="btn btn-small btn-secondary" onclick="attachExport('tiff', true)"
+    <button class="btn btn-small btn-secondary attach-btn" onclick="attachExport('tiff', true)"
             title="Render the current view as TIFF with embedded metadata and attach it to this scan. Bundled in the experiment ZIP.">TIFF + metadata</button>
-    <button class="btn btn-small btn-secondary" id="btnLive" onclick="toggleLivePreview()" style="margin-left:auto">Live preview: OFF</button>
   </div>
 
   <!-- Location hints strip — clarifies where the different "save" paths write.
@@ -771,8 +778,15 @@ const ViewerState = {
   tx: 0,
   ty: 0,
   inverted: false,
-  brightness: 0,
-  contrast: 0,
+  // Per-channel brightness/contrast (Vincent's lab feedback 2026-04-30 —
+  // the two channels image different proteins; needing one global slider
+  // to balance both is awkward). Range: -100..+100 for each, identical
+  // to the old single pair. The 700/800 pair is applied to that channel
+  // bitmap before tinting; the overlay view applies both.
+  brightness_700: 0,
+  contrast_700: 0,
+  brightness_800: 0,
+  contrast_800: 0,
 };
 
 let ws = null;
@@ -791,6 +805,17 @@ function connectWS() {
     const msg = JSON.parse(e.data);
     if (msg.type === 'status') updateScanSession(msg);
     if (msg.type === 'scan_complete') onScanComplete(msg);
+  };
+  ws.onopen = async () => {
+    // Re-sync the UI from the server's authoritative status the moment
+    // the WS comes up — covers both initial connect and reconnect-after-
+    // uvicorn-restart. Without this, after a server restart the UI sat
+    // on stale ScanSession.state until the 5 s safety-net poller fired,
+    // which is what made Configure "not work until I refresh a few times".
+    try {
+      const resp = await fetch('/api/scan/status');
+      if (resp.ok) updateScanSession(await resp.json());
+    } catch (e) { /* WS will retry */ }
   };
   ws.onclose = () => setTimeout(connectWS, 2000);
 }
@@ -835,6 +860,85 @@ function applyScanSession() {
   document.getElementById('btnPause').disabled = !btnStates.pause;
   document.getElementById('btnStop').disabled = !btnStates.stop;
   document.getElementById('btnCancel').disabled = !btnStates.cancel;
+
+  // Auto-toggle live preview on the scan-state transition. Turn ON
+  // when the instrument starts a scan so the user sees the partial
+  // image building up in real time; leave it ON across the terminal
+  // transition so refreshLivePreview swaps to channel TIFFs once the
+  // scan is done. We only flip OFF when the user explicitly clicks
+  // the button, or when a scan ends and the user navigates away.
+  if (typeof LIVE_SCAN_STATES !== 'undefined' &&
+      LIVE_SCAN_STATES.has(s) && ScanSession.scan_name &&
+      autoUpdateInterval === null) {
+    startLivePreview();
+  }
+
+  // Quit must be disabled while a scan is actively in flight. Match
+  // the server-side gate in /api/quit so the UI never enables a
+  // button that the API would refuse.
+  const busy = (s === 'Initializing' || s === 'Scanning' || s === 'Paused');
+  const quitBtn = document.getElementById('btnQuit');
+  if (quitBtn) {
+    quitBtn.disabled = busy;
+    quitBtn.title = busy
+      ? `Cannot quit while a scan is ${s.toLowerCase()}.`
+      : 'Stop the server cleanly and exit.';
+  }
+
+  // Same gate for the export-experiment-ZIP button and the per-scan
+  // attach buttons. Bundling files mid-scan races the live JPEG/TIFF
+  // writer on the instrument and can produce truncated attachments.
+  const exportBtn = document.getElementById('btnExportExperiment');
+  if (exportBtn && !exportBtn.dataset.lockReason) {
+    if (busy) {
+      exportBtn.dataset.lockReason = 'busy';
+      exportBtn.disabled = true;
+      exportBtn.title = `Cannot export while a scan is ${s.toLowerCase()}.`;
+    }
+  } else if (exportBtn && exportBtn.dataset.lockReason === 'busy' && !busy) {
+    delete exportBtn.dataset.lockReason;
+    // Restore based on history-count (the page sets it from refreshHistory).
+    exportBtn.disabled = (parseInt(document.getElementById('historyCount')?.textContent || '0', 10) === 0);
+    exportBtn.title = 'Bundle every scan record and image for this experiment (session) into a ZIP file.';
+  }
+  for (const btn of document.querySelectorAll('.attach-btn')) {
+    btn.disabled = busy;
+    if (busy) btn.title = `Cannot attach while a scan is ${s.toLowerCase()}.`;
+  }
+}
+
+async function resetInstrument() {
+  if (!confirm('Force the instrument back to Idle?\n\nThis sends Cancel followed by a status-page stop. Use when the scanner is stuck after a scan, or when state is wedged.')) return;
+  try {
+    const resp = await fetch('/api/scan/reset', {method: 'POST'});
+    const body = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      showToast('Instrument reset — back to Idle');
+    } else {
+      showToast('Reset failed: ' + (body.detail || resp.statusText), true);
+    }
+  } catch (e) {
+    showToast('Reset failed: ' + e.message, true);
+  }
+}
+
+async function quitApp() {
+  if (!confirm('Stop the server and exit?\n\nThis will close the connection to the Odyssey and shut down the app.')) return;
+  try {
+    const resp = await fetch('/api/quit', {method: 'POST'});
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({detail: 'unknown error'}));
+      showToast(`Cannot quit: ${body.detail || resp.statusText}`, true);
+      return;
+    }
+  } catch (e) {
+    // Server may have died before the response landed — that's fine.
+  }
+  document.body.innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:center;'
+    + 'height:100vh;font-family:system-ui;color:#666;text-align:center">'
+    + '<div><h2>Server stopped</h2><p>You can close this tab.</p></div>'
+    + '</div>';
 }
 
 function buttonStatesFor(state) {
@@ -1240,18 +1344,23 @@ function renderCanvas() {
 
   if (view === 'overlay') {
     // 700 → red tint, 800 → green tint; 'lighten' composite yields the
-    // standard LI-COR dual-channel look. If inverted, flip the base fill
-    // but keep the channel tints.
-    drawTinted(cctx, ChannelCache.ch700, '#ff4444');
+    // standard LI-COR dual-channel look. Per-channel B/C is applied
+    // BEFORE tinting and BEFORE compositing so the two channels can be
+    // balanced independently.
+    drawChannelLayer(cctx, ChannelCache.ch700, '#ff4444',
+                     ViewerState.brightness_700, ViewerState.contrast_700);
     cctx.globalCompositeOperation = 'lighten';
-    drawTinted(cctx, ChannelCache.ch800, '#44cc44');
+    drawChannelLayer(cctx, ChannelCache.ch800, '#44cc44',
+                     ViewerState.brightness_800, ViewerState.contrast_800);
     cctx.globalCompositeOperation = 'source-over';
   } else {
     const tint = view === '700' ? '#ff4444' : '#44cc44';
-    drawTinted(cctx, bitmap, tint);
+    const b = view === '700' ? ViewerState.brightness_700 : ViewerState.brightness_800;
+    const c = view === '700' ? ViewerState.contrast_700   : ViewerState.contrast_800;
+    drawChannelLayer(cctx, bitmap, tint, b, c);
   }
 
-  applyBrightnessContrast(cctx, canvas.width, canvas.height);
+  if (ViewerState.inverted) applyInversion(cctx, canvas.width, canvas.height);
 
   // Blit to the visible canvas with the current zoom/pan transform (US4).
   ctx.save();
@@ -1267,30 +1376,36 @@ function renderCanvas() {
   updateViewButtons();
 }
 
-function drawTinted(ctx, bitmap, tintColor) {
-  // Draw the grayscale bitmap and multiply by a tint so 700 is red and
-  // 800 is green. Uses two-step compositing: draw solid tint, then
-  // 'multiply' with the grayscale.
-  ctx.save();
-  ctx.drawImage(bitmap, 0, 0, ctx.canvas.width, ctx.canvas.height);
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = tintColor;
-  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-  ctx.restore();
+function drawChannelLayer(ctx, bitmap, tintColor, brightness, contrast) {
+  // Draw one channel's grayscale bitmap onto a fresh offscreen canvas,
+  // apply that channel's brightness/contrast in place, then multiply by
+  // the channel tint and blit to the destination. Doing B/C per-layer
+  // (rather than once at the end) lets 700 and 800 be balanced
+  // independently — the user's actual lab workflow when one channel's
+  // signal is much stronger than the other.
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  const layer = document.createElement('canvas');
+  layer.width = w; layer.height = h;
+  const lctx = layer.getContext('2d');
+  lctx.drawImage(bitmap, 0, 0, w, h);
+  if (brightness !== 0 || contrast !== 0) {
+    applyBrightnessContrastTo(lctx, w, h, brightness, contrast);
+  }
+  // Multiply by tint to give 700 red / 800 green.
+  lctx.globalCompositeOperation = 'multiply';
+  lctx.fillStyle = tintColor;
+  lctx.fillRect(0, 0, w, h);
+  lctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(layer, 0, 0);
 }
 
-function applyBrightnessContrast(ctx, w, h) {
-  const b = ViewerState.brightness;
-  const c = ViewerState.contrast;
-  if (b === 0 && c === 0 && !ViewerState.inverted) return;
+function applyBrightnessContrastTo(ctx, w, h, brightness, contrast) {
   const imgData = ctx.getImageData(0, 0, w, h);
   const d = imgData.data;
-  const cf = (259 * (c + 255)) / (255 * (259 - c));
+  const cf = (259 * (contrast + 255)) / (255 * (259 - contrast));
   for (let i = 0; i < d.length; i += 4) {
     for (let j = 0; j < 3; j++) {
-      let v = d[i + j];
-      if (ViewerState.inverted) v = 255 - v;
-      v += b;
+      let v = d[i + j] + brightness;
       v = cf * (v - 128) + 128;
       d[i + j] = v < 0 ? 0 : v > 255 ? 255 : v;
     }
@@ -1298,11 +1413,26 @@ function applyBrightnessContrast(ctx, w, h) {
   ctx.putImageData(imgData, 0, 0);
 }
 
+function applyInversion(ctx, w, h) {
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = 255 - d[i];
+    d[i+1] = 255 - d[i+1];
+    d[i+2] = 255 - d[i+2];
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
 function onBrightnessContrast() {
-  ViewerState.brightness = parseInt(document.getElementById('brightness').value);
-  ViewerState.contrast = parseInt(document.getElementById('contrast').value);
-  document.getElementById('brightnessVal').textContent = ViewerState.brightness;
-  document.getElementById('contrastVal').textContent = ViewerState.contrast;
+  ViewerState.brightness_700 = parseInt(document.getElementById('brightness_700').value);
+  ViewerState.contrast_700   = parseInt(document.getElementById('contrast_700').value);
+  ViewerState.brightness_800 = parseInt(document.getElementById('brightness_800').value);
+  ViewerState.contrast_800   = parseInt(document.getElementById('contrast_800').value);
+  document.getElementById('bc700Val').textContent =
+    `${ViewerState.brightness_700}/${ViewerState.contrast_700}`;
+  document.getElementById('bc800Val').textContent =
+    `${ViewerState.brightness_800}/${ViewerState.contrast_800}`;
   renderCanvas();
 }
 
@@ -1313,13 +1443,16 @@ function invertImage() {
 }
 
 function resetView() {
-  ViewerState.brightness = 0;
-  ViewerState.contrast = 0;
+  ViewerState.brightness_700 = 0;
+  ViewerState.contrast_700 = 0;
+  ViewerState.brightness_800 = 0;
+  ViewerState.contrast_800 = 0;
   ViewerState.inverted = false;
-  document.getElementById('brightness').value = 0;
-  document.getElementById('contrast').value = 0;
-  document.getElementById('brightnessVal').textContent = '0';
-  document.getElementById('contrastVal').textContent = '0';
+  for (const id of ['brightness_700','contrast_700','brightness_800','contrast_800']) {
+    document.getElementById(id).value = 0;
+  }
+  document.getElementById('bc700Val').textContent = '0/0';
+  document.getElementById('bc800Val').textContent = '0/0';
   document.getElementById('btnInvert').classList.remove('btn-warning');
   resetViewTransform();
   renderCanvas();
@@ -1458,31 +1591,85 @@ document.addEventListener('DOMContentLoaded', () => {
    Live-preview toggle (US5). One handle, cleared on OFF (B1 fix).
 ============================================================================ */
 
-function toggleLivePreview() {
-  const btn = document.getElementById('btnLive');
-  if (autoUpdateInterval !== null) {
-    clearInterval(autoUpdateInterval);
-    autoUpdateInterval = null;
-    btn.textContent = 'Live preview: OFF';
-    btn.classList.remove('btn-warning');
-    showToast('Live preview stopped');
+// States during which the JPEG preview endpoint returns useful data
+// (the instrument can render a partial preview at any time during a
+// scan), distinct from the post-scan state where the channel TIFFs
+// exist and the per-channel viewer takes over.
+const LIVE_SCAN_STATES = new Set(['Configured', 'Initializing', 'Scanning', 'Paused']);
+
+function drawLiveJpeg(bitmap) {
+  // Render the instrument's pre-colorized JPEG verbatim into the
+  // viewer canvas. Used during scanning, when ChannelCache.ch700/800
+  // (grayscale TIFFs) don't exist yet and the channel-tint compositor
+  // would just stain the JPEG.
+  const canvas = document.getElementById('imageCanvas');
+  const placeholder = document.getElementById('imagePlaceholder');
+  const viewer = document.getElementById('imageViewer');
+  placeholder.style.display = 'none';
+  canvas.style.display = 'block';
+  const maxW = viewer.clientWidth - 20;
+  const maxH = viewer.clientHeight - 20;
+  const fitScale = Math.min(maxW / bitmap.width, maxH / bitmap.height, 1);
+  canvas.width = Math.max(1, Math.round(bitmap.width * fitScale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * fitScale));
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(
+    ViewerState.scale, 0, 0, ViewerState.scale,
+    ViewerState.tx, ViewerState.ty,
+  );
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+}
+
+function startLivePreview() {
+  if (autoUpdateInterval !== null) return;
+  autoUpdateInterval = setInterval(refreshLivePreview, 3000);
+  // Fire one immediately so the user sees something within a second
+  // of clicking Start, instead of waiting up to 3 s.
+  refreshLivePreview();
+}
+
+function stopLivePreview() {
+  if (autoUpdateInterval === null) return;
+  clearInterval(autoUpdateInterval);
+  autoUpdateInterval = null;
+}
+
+async function refreshLivePreview() {
+  if (!ScanSession.scan_name) return;
+  const state = ScanSession.state || 'Idle';
+  // Once the scan is terminal AND we already have TIFFs in the cache,
+  // there's nothing left to refresh — stop polling so we don't hammer
+  // the instrument and don't race a follow-up Configure.
+  if (!LIVE_SCAN_STATES.has(state) && ChannelCache.ch700) {
+    stopLivePreview();
     return;
   }
-  autoUpdateInterval = setInterval(async () => {
-    // Only refresh if a scan is in flight; otherwise there's nothing new.
-    if (!ScanSession.scan_name) return;
-    try {
+  try {
+    if (LIVE_SCAN_STATES.has(state)) {
+      // Mid-scan: ask the instrument for a JPEG preview. The Odyssey
+      // can render at any time and returns what it has so far. The
+      // JPEG is ALREADY a colorized 700+800 composite — draw it
+      // verbatim, bypassing our per-channel tint compositor (otherwise
+      // we'd re-tint the already-red 700 layer red and lose the green).
+      const url = `/api/image/preview?scan=${encodeURIComponent(ScanSession.scan_name)}&group=${encodeURIComponent(ScanSession.group || LOCKED_GROUP)}`;
+      const resp = await fetch(url);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const bitmap = await createImageBitmap(blob);
+      drawLiveJpeg(bitmap);
+    } else {
+      // Post-scan: pull the per-channel TIFFs and let the channel
+      // switcher take over.
       const url = `/api/image/channels?scan=${encodeURIComponent(ScanSession.scan_name)}&group=${encodeURIComponent(ScanSession.group || LOCKED_GROUP)}`;
       const resp = await fetch(url);
       if (!resp.ok) return;
       await populateChannelCache(await resp.json());
       if (ViewerState.active_view === null && ChannelCache.ch700) setActiveView('700');
       else renderCanvas();
-    } catch (e) { /* swallow — this is an opportunistic refresh */ }
-  }, 3000);
-  btn.textContent = 'Live preview: ON';
-  btn.classList.add('btn-warning');
-  showToast('Live preview: updating every 3 s');
+    }
+  } catch (e) { /* swallow — this is an opportunistic refresh */ }
 }
 
 window.addEventListener('beforeunload', () => {
