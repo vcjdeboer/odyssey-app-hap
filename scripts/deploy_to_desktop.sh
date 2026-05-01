@@ -121,24 +121,21 @@ start /b "" cmd /c "ping -n 3 127.0.0.1 >nul & start "" "%CHROME_EXE%" --new-win
 
 :: Headless launch when credentials.bat exists next to run.bat (copy
 :: credentials.bat.example to credentials.bat and fill in your values
-:: once on the lab box). Otherwise fall back to interactive prompts.
+:: once on the lab box). Otherwise prompt directly for the instrument
+:: details — both launchers always connect to real hardware. (Simulated
+:: mode is still available for Mac dev: just run uvicorn directly with
+:: ODYSSEY_HOST unset.)
 if exist credentials.bat (
     call credentials.bat
     echo Loaded credentials.bat — connecting to %ODYSSEY_HOST% as %ODYSSEY_USER%
 ) else (
-    set ODYSSEY_HOST=
-    set /p MODE="Connect to real Odyssey? (y/N): "
-    if /i "%MODE%"=="y" (
-        set /p ODYSSEY_HOST="Odyssey IP [169.254.206.190]: "
-        if "%ODYSSEY_HOST%"=="" set ODYSSEY_HOST=169.254.206.190
-        set /p ODYSSEY_USER="Odyssey username [odyssey]: "
-        if "%ODYSSEY_USER%"=="" set ODYSSEY_USER=odyssey
-        set /p ODYSSEY_PASS="Odyssey password [odyssey]: "
-        if "%ODYSSEY_PASS%"=="" set ODYSSEY_PASS=odyssey
-        echo Connecting to %ODYSSEY_HOST%...
-    ) else (
-        echo Running in simulated mode.
-    )
+    set /p ODYSSEY_HOST="Odyssey IP [169.254.206.190]: "
+    if "%ODYSSEY_HOST%"=="" set ODYSSEY_HOST=169.254.206.190
+    set /p ODYSSEY_USER="Odyssey username [odyssey]: "
+    if "%ODYSSEY_USER%"=="" set ODYSSEY_USER=odyssey
+    set /p ODYSSEY_PASS="Odyssey password [odyssey]: "
+    if "%ODYSSEY_PASS%"=="" set ODYSSEY_PASS=odyssey
+    echo Connecting to %ODYSSEY_HOST%...
 )
 
 echo.
@@ -179,18 +176,12 @@ if exist credentials.bat (
     call credentials.bat
     echo Loaded credentials.bat — connecting to %ODYSSEY_HOST% as %ODYSSEY_USER%
 ) else (
-    set ODYSSEY_HOST=
-    set /p MODE="Connect to real Odyssey? (y/N): "
-    if /i "%MODE%"=="y" (
-        set /p ODYSSEY_HOST="Odyssey IP [169.254.206.190]: "
-        if "%ODYSSEY_HOST%"=="" set ODYSSEY_HOST=169.254.206.190
-        set /p ODYSSEY_USER="Odyssey username [odyssey]: "
-        if "%ODYSSEY_USER%"=="" set ODYSSEY_USER=odyssey
-        set /p ODYSSEY_PASS="Odyssey password [odyssey]: "
-        if "%ODYSSEY_PASS%"=="" set ODYSSEY_PASS=odyssey
-    ) else (
-        echo Running in simulated mode.
-    )
+    set /p ODYSSEY_HOST="Odyssey IP [169.254.206.190]: "
+    if "%ODYSSEY_HOST%"=="" set ODYSSEY_HOST=169.254.206.190
+    set /p ODYSSEY_USER="Odyssey username [odyssey]: "
+    if "%ODYSSEY_USER%"=="" set ODYSSEY_USER=odyssey
+    set /p ODYSSEY_PASS="Odyssey password [odyssey]: "
+    if "%ODYSSEY_PASS%"=="" set ODYSSEY_PASS=odyssey
 )
 
 echo.

@@ -313,7 +313,7 @@
 
   .image-viewer {
     flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
-    display: flex; align-items: center; justify-content: center; min-height: 640px;
+    display: flex; align-items: center; justify-content: center; min-height: 480px;
     position: relative; overflow: hidden;
   }
   .image-viewer canvas { background: #000; max-width: 100%; max-height: 100%; cursor: grab; }
@@ -649,8 +649,6 @@
             title="Stop the scan and save whatever has been acquired so far">Stop</button>
     <button class="btn btn-secondary" id="btnCancel" onclick="cancelScan()" disabled
             title="Cancel the scan and discard all data">Cancel</button>
-    <button class="btn btn-warning btn-small" id="btnReset" onclick="resetInstrument()"
-            title="Force the instrument back to Idle. Sends Cancel + a status-page stop. Use when the scanner sounds stuck after a scan completes, or when state is wedged.">Reset</button>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <span class="scan-status-text" id="scanStatusText">Idle</span>
   </div>
@@ -859,6 +857,9 @@ function connectWS() {
       const resp = await fetch('/api/scan/status');
       if (resp.ok) updateScanSession(await resp.json());
     } catch (e) { /* WS will retry */ }
+    // Also re-pull connection info — the startup hook may have just
+    // finished connecting to the instrument after the badge was painted.
+    refreshConnection();
   };
   ws.onclose = () => setTimeout(connectWS, 2000);
 }
@@ -952,21 +953,6 @@ function applyScanSession() {
   for (const btn of document.querySelectorAll('.attach-btn')) {
     btn.disabled = busy;
     if (busy) btn.title = `Cannot attach while a scan is ${s.toLowerCase()}.`;
-  }
-}
-
-async function resetInstrument() {
-  if (!confirm('Force the instrument back to Idle?\n\nThis sends Cancel followed by a status-page stop. Use when the scanner is stuck after a scan, or when state is wedged.')) return;
-  try {
-    const resp = await fetch('/api/scan/reset', {method: 'POST'});
-    const body = await resp.json().catch(() => ({}));
-    if (resp.ok) {
-      showToast('Instrument reset — back to Idle');
-    } else {
-      showToast('Reset failed: ' + (body.detail || resp.statusText), true);
-    }
-  } catch (e) {
-    showToast('Reset failed: ' + e.message, true);
   }
 }
 
@@ -1146,20 +1132,39 @@ async function configureScan() {
     return;
   }
 
-  // Conflict check: if a scan with this (project, scan_name) already
-  // exists on disk, ask the user before silently renaming. This is
-  // more explicit than the old auto-rename-with-toast behaviour —
-  // the researcher sees the collision and decides what to do.
+  // Conflict check. The instrument-side name is now prefixed with
+  // experiment_id (server-side, in /api/scan/configure), so
+  // collisions on the instrument's global namespace are virtually
+  // impossible by construction — the experiment_id is unique per
+  // browser session. We still check both layers as a safety net:
+  //   - local records: against the user-typed scan_name (records
+  //     store the unprefixed name, displayed everywhere in the UI)
+  //   - instrument list: against the PREFIXED name we'll actually
+  //     send, so legacy un-prefixed entries don't false-positive.
   try {
-    const resp = await fetch('/api/records');
-    if (resp.ok) {
-      const recs = await resp.json();
-      const existing = recs
+    const [recsResp, instResp] = await Promise.all([
+      fetch('/api/records'),
+      fetch(`/api/scan/list?group=${encodeURIComponent(LOCKED_GROUP)}`),
+    ]);
+    if (recsResp.ok) {
+      const recs = await recsResp.json();
+      const localExisting = recs
         .filter(r => (r.project || '').trim().toLowerCase()
                    === (data.project || '').trim().toLowerCase())
         .map(r => r.scan_name);
+      const expId = (data.experiment_id || '').trim();
+      const prefixed = expId ? `${expId}_${data.scan_name}` : data.scan_name;
+      const instrumentList = instResp.ok
+        ? ((await instResp.json()).scans || [])
+        : [];
+      const localCollision = localExisting.includes(data.scan_name);
+      const instrumentCollision = instrumentList.includes(prefixed);
 
-      if (existing.includes(data.scan_name)) {
+      if (localCollision || instrumentCollision) {
+        // For the rename suggestion, only the local list matters —
+        // instrumentList is for prefixed names and the user types
+        // unprefixed.
+        const existing = localExisting;
         const suggestion = uniquifyScanName(data.scan_name, existing);
         const proceed = confirm(
           `Project "${data.project}" already has a scan called "${data.scan_name}".\n\n` +
@@ -1182,6 +1187,16 @@ async function configureScan() {
       }
     }
   } catch (e) { /* non-fatal — proceed with the original name */ }
+
+  // Clear the previous scan from the viewer the moment we're about
+  // to commit to a new one — otherwise the channel buttons keep
+  // showing the previous run's bitmaps while the next scan is still
+  // initialising / scanning.
+  ChannelCache.clear();
+  ViewerState.active_view = null;
+  resetViewTransform();
+  updateViewButtons();
+  renderCanvas();
 
   try {
     const resp = await fetch('/api/scan/configure', {
@@ -1280,7 +1295,10 @@ async function onScanComplete(msg) {
   showToast(`Scan ${outcome}: ${msg.scan}`);
 
   try {
-    const url = `/api/image/channels?scan=${encodeURIComponent(msg.scan)}&group=${encodeURIComponent(msg.group || LOCKED_GROUP)}`;
+    const expId = (document.getElementById('experimentId')?.value || '').trim();
+    const url = `/api/image/channels?${_qsParam('scan', msg.scan)}`
+              + `&${_qsParam('group', msg.group || LOCKED_GROUP)}`
+              + `&${_qsParam('experiment_id', expId)}`;
     const resp = await fetch(url);
     if (!resp.ok) {
       const body = await resp.text();
@@ -1744,6 +1762,12 @@ async function refreshLivePreview() {
     stopLivePreview();
     return;
   }
+  // Pass experiment_id so the server can translate the user-typed
+  // scan name to the prefixed name the instrument actually has.
+  const expId = (document.getElementById('experimentId')?.value || '').trim();
+  const qs = `${_qsParam('scan', ScanSession.scan_name)}`
+           + `&${_qsParam('group', ScanSession.group || LOCKED_GROUP)}`
+           + `&${_qsParam('experiment_id', expId)}`;
   try {
     if (LIVE_SCAN_STATES.has(state)) {
       // Mid-scan: ask the instrument for a JPEG preview. The Odyssey
@@ -1751,8 +1775,7 @@ async function refreshLivePreview() {
       // JPEG is ALREADY a colorized 700+800 composite — draw it
       // verbatim, bypassing our per-channel tint compositor (otherwise
       // we'd re-tint the already-red 700 layer red and lose the green).
-      const url = `/api/image/preview?scan=${encodeURIComponent(ScanSession.scan_name)}&group=${encodeURIComponent(ScanSession.group || LOCKED_GROUP)}`;
-      const resp = await fetch(url);
+      const resp = await fetch(`/api/image/preview?${qs}`);
       if (!resp.ok) return;
       const blob = await resp.blob();
       const bitmap = await createImageBitmap(blob);
@@ -1760,8 +1783,7 @@ async function refreshLivePreview() {
     } else {
       // Post-scan: pull the per-channel TIFFs and let the channel
       // switcher take over.
-      const url = `/api/image/channels?scan=${encodeURIComponent(ScanSession.scan_name)}&group=${encodeURIComponent(ScanSession.group || LOCKED_GROUP)}`;
-      const resp = await fetch(url);
+      const resp = await fetch(`/api/image/channels?${qs}`);
       if (!resp.ok) return;
       await populateChannelCache(await resp.json());
       if (ViewerState.active_view === null && ChannelCache.ch700) setActiveView('700');
@@ -2203,6 +2225,10 @@ async function exportExperiment() {
   }
 }
 
+function _qsParam(k, v) {
+  return `${encodeURIComponent(k)}=${encodeURIComponent(v ?? '')}`;
+}
+
 function renderHistoryItem(r) {
   const s = r.scan_settings || {};
   const bits = [];
@@ -2233,8 +2259,9 @@ function renderHistoryItem(r) {
         }).join('')
       + '</div>';
 
+  const expId = r.experiment_id || '';
   return `<div class="history-item${isActive ? ' active' : ''}"
-               onclick="loadHistoricalScan('${_esc(r.scan_name)}', '${_esc(group)}')">
+               onclick="loadHistoricalScan('${_esc(r.scan_name)}', '${_esc(group)}', '${_esc(expId)}')">
     <div class="name">${_esc(r.scan_name || '(unnamed)')}</div>
     <div class="meta">${metaHtml}</div>
     <div class="time">${_esc(time)}${r.operator ? ' · ' + _esc(r.operator) : ''}</div>
@@ -2242,10 +2269,15 @@ function renderHistoryItem(r) {
   </div>`;
 }
 
-async function loadHistoricalScan(scanName, group) {
+async function loadHistoricalScan(scanName, group, experimentId) {
   if (!scanName) return;
   try {
-    const url = `/api/image/channels?scan=${encodeURIComponent(scanName)}&group=${encodeURIComponent(group)}`;
+    // experimentId comes from the record JSON — required for scans
+    // saved with the experiment_id-prefix scheme so the server
+    // translates back to the instrument-side prefixed name.
+    const url = `/api/image/channels?${_qsParam('scan', scanName)}`
+              + `&${_qsParam('group', group)}`
+              + `&${_qsParam('experiment_id', experimentId)}`;
     const resp = await fetch(url);
     if (!resp.ok) {
       const body = await resp.text();
@@ -2308,6 +2340,44 @@ function initTheme() {
 /* ============================================================================
    Toast
 ============================================================================ */
+
+async function refreshConnection() {
+  // Pull /api/connection and update the header badge + PID link. Called
+  // on initial load, on WS connect/reconnect, and re-tried while the
+  // mode is still 'simulated' but ODYSSEY_HOST was set in run.bat —
+  // the FastAPI startup hook can take a couple of seconds to finish
+  // connecting to the real instrument, and Chrome can fetch this
+  // endpoint before that completes (showing "simulated" forever
+  // unless we retry).
+  try {
+    const resp = await fetch('/api/connection');
+    if (!resp.ok) return;
+    const info = await resp.json();
+    const badge = document.getElementById('connBadge');
+    if (info.mode === 'real') {
+      badge.textContent = 'connected';
+      badge.classList.add('real');
+    } else {
+      badge.textContent = 'simulated';
+      badge.classList.remove('real');
+      // If we asked for real hardware in run.bat, the startup hook may
+      // still be authenticating. Re-poll until the badge flips to real
+      // or we give up after 30 s.
+      if (!refreshConnection._tries) refreshConnection._tries = 0;
+      refreshConnection._tries += 1;
+      if (refreshConnection._tries < 15) {  // 15 × 2 s = 30 s
+        setTimeout(refreshConnection, 2000);
+      }
+    }
+    const pidLink = document.getElementById('instrumentPid');
+    if (pidLink && info.instrument_pid) {
+      const short = info.instrument_pid.replace(/^https?:\/\/hdl\.handle\.net\//, 'hdl:');
+      pidLink.textContent = short;
+      pidLink.href = info.instrument_landing_page || info.instrument_pid;
+      pidLink.title = `${info.instrument_name || ''}\nPID: ${info.instrument_pid}`.trim();
+    }
+  } catch (e) {}
+}
 
 function showToast(msg, isError) {
   const toast = document.getElementById('toast');
@@ -2393,25 +2463,7 @@ async function init() {
   addLane('', '', '');
   addLane('', '', '');
 
-  try {
-    const resp = await fetch('/api/connection');
-    const info = await resp.json();
-    const badge = document.getElementById('connBadge');
-    if (info.mode === 'real') {
-      badge.textContent = 'connected';
-      badge.classList.add('real');
-    } else {
-      badge.textContent = 'simulated';
-    }
-    const pidLink = document.getElementById('instrumentPid');
-    if (pidLink && info.instrument_pid) {
-      // Show the short Handle suffix; full PID + landing page reachable via the link.
-      const short = info.instrument_pid.replace(/^https?:\/\/hdl\.handle\.net\//, 'hdl:');
-      pidLink.textContent = short;
-      pidLink.href = info.instrument_landing_page || info.instrument_pid;
-      pidLink.title = `${info.instrument_name || ''}\nPID: ${info.instrument_pid}`.trim();
-    }
-  } catch (e) {}
+  refreshConnection();
 
   initZoomPan();
   connectWS();

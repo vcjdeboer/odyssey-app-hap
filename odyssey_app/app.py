@@ -144,9 +144,33 @@ _scan_state: dict = {
     "time_remaining": "",
     "lid_open": False,
     "current_user": "",
-    "current_scan": "",
+    "current_scan": "",            # user-typed, unprefixed
+    "current_scan_instrument": "", # prefixed with experiment_id (what the instrument has)
+    "current_experiment_id": "",
     "current_group": "",
 }
+
+
+def _resolve_instrument_scan(scan: str, experiment_id: Optional[str] = None) -> str:
+    """Translate a UI-side scan name to the on-instrument prefixed name.
+
+    The caller signals intent through the ``experiment_id`` argument:
+      - ``None`` (default)  → "I don't have one; fall back to the
+        active session in ``_scan_state``". Covers the live-scan flow
+        where the JS may or may not pass the id explicitly.
+      - ``""``              → "Explicitly no prefix." Used by the ZIP
+        export when a record was saved before the prefix scheme.
+      - ``"abc123"``        → use the given id.
+
+    Distinguishing None from "" matters: a legacy scan with empty
+    experiment_id should NOT pick up the active session's prefix
+    (which would point at the wrong instrument-side name).
+    """
+    if experiment_id is None:
+        eid = _scan_state.get("current_experiment_id", "") or ""
+    else:
+        eid = experiment_id
+    return _instrument_scan_name(scan, eid.strip())
 _image_state: dict = {
     "loaded": False,
     "scan_name": "",
@@ -326,6 +350,30 @@ async def index():
 
 # -- Scan API --
 
+def _instrument_scan_name(user_scan_name: str, experiment_id: str) -> str:
+    """Prefix a scan name with this session's experiment_id.
+
+    The instrument's scan-name namespace is global and never garbage-
+    collected: every scan name ever submitted by any user since the
+    Odyssey was deployed sits in the preset list forever, and a name
+    collision returns ``Scan already exists``. Stamping the
+    experiment_id (a fresh UUID per browser session) in front gives
+    every scan a globally-unique on-instrument name without forcing
+    the user to come up with one.
+
+    The user-facing scan name (typed in the UI, saved in records,
+    used in history/exports) stays unprefixed — the prefix is purely
+    an instrument-side namespace concern. Idempotent if the name
+    already starts with the prefix.
+    """
+    if not experiment_id or not user_scan_name:
+        return user_scan_name
+    prefix = f"{experiment_id}_"
+    if user_scan_name.startswith(prefix):
+        return user_scan_name
+    return f"{prefix}{user_scan_name}"
+
+
 @app.post("/api/scan/configure")
 async def configure_scan(data: dict):
     """Configure a scan with parameters from the GUI.
@@ -355,8 +403,11 @@ async def configure_scan(data: dict):
         )
     try:
         scan_settings = data.get("scan_settings", {})
+        scan_name_user = (data.get("scan_name") or "scan").strip()
+        experiment_id = (data.get("experiment_id") or "").strip()
+        instrument_scan_name = _instrument_scan_name(scan_name_user, experiment_id)
         params = ScanParameters(
-            name=data.get("scan_name", "scan"),
+            name=instrument_scan_name,
             group=group,
             resolution=str(scan_settings.get("resolution_um", 169)),
             quality=scan_settings.get("quality", "medium"),
@@ -378,7 +429,15 @@ async def configure_scan(data: dict):
         _scan_state["state"] = "Configured"
         _scan_state["progress"] = 0  # reset from any previous scan's 100%
         _scan_state["time_remaining"] = ""
-        _scan_state["current_scan"] = params.name
+        # ``current_scan`` is the USER-TYPED unprefixed name, used for
+        # display in the UI, in records, and for matching attachments
+        # by filename. The prefixed instrument-side name lives on
+        # ``current_scan_instrument`` and ``current_experiment_id``,
+        # which the image endpoints use to translate user-typed names
+        # back to what the instrument actually has.
+        _scan_state["current_scan"] = scan_name_user
+        _scan_state["current_scan_instrument"] = instrument_scan_name
+        _scan_state["current_experiment_id"] = experiment_id
         _scan_state["current_group"] = params.group
         await _broadcast({"type": "status", **_scan_state})
         return {"status": "ok", "message": "Scan configured"}
@@ -624,6 +683,23 @@ async def cancel_scan():
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/scan/list")
+async def list_instrument_scans(group: str = DEFAULT_GROUP):
+    """List every scan name that already exists on the instrument for
+    the given group. Used by the UI's pre-configure uniqueness check
+    so the user is warned about a name collision BEFORE the
+    instrument bounces it back as ``Scan already exists``.
+    """
+    if _image_driver is None or _odyssey_driver is None:
+        return {"group": group, "scans": []}
+    try:
+        scans = await _image_driver.backend.list_scans(group)
+        return {"group": group, "scans": scans}
+    except Exception as e:
+        logging.info("list_scans failed for group %s: %s", group, e)
+        return {"group": group, "scans": [], "error": str(e)}
+
+
 @app.get("/api/scan/status")
 async def scan_status():
     """Get current scan status."""
@@ -658,19 +734,22 @@ async def estimate_time(
 
 # -- Image API --
 
-async def _render_single_channel(group: str, scan: str, channel: int) -> bytes:
+async def _render_single_channel(group: str, scan: str, channel: int, experiment_id: Optional[str] = None) -> bytes:
     """Render one channel to PNG bytes.
 
     Real mode: fetch the server-side JPEG preview for this channel only.
     Simulated mode: generate a placeholder coloured per channel.
-    Returns empty bytes if the channel is not available.
+    Returns empty bytes if the channel is not available. ``scan`` is
+    the user-typed name; ``experiment_id`` (or the active session in
+    _scan_state) is used to translate to the prefixed instrument name.
     """
     if _image_driver and _odyssey_driver and hasattr(
         _image_driver.backend, "get_preview"
     ):
+        instrument_scan = _resolve_instrument_scan(scan, experiment_id)
         try:
             return await _image_driver.backend.get_preview(
-                group, scan,
+                group, instrument_scan,
                 contrast_700=5, contrast_800=5,
                 channels=str(channel),
                 background="black",
@@ -702,7 +781,7 @@ async def _render_single_channel(group: str, scan: str, channel: int) -> bytes:
 
 
 @app.get("/api/image/channels")
-async def get_channels(scan: str, group: str = DEFAULT_GROUP):
+async def get_channels(scan: str, group: str = DEFAULT_GROUP, experiment_id: Optional[str] = None):
     """Return both channel images in one response (FR-005).
 
     The browser calls this exactly once per scan_complete event and caches
@@ -723,8 +802,8 @@ async def get_channels(scan: str, group: str = DEFAULT_GROUP):
     if not scan:
         raise HTTPException(status_code=400, detail="scan parameter required")
 
-    ch700_bytes = await _render_single_channel(group, scan, 700)
-    ch800_bytes = await _render_single_channel(group, scan, 800)
+    ch700_bytes = await _render_single_channel(group, scan, 700, experiment_id)
+    ch800_bytes = await _render_single_channel(group, scan, 800, experiment_id)
 
     def _encode(b: bytes) -> Optional[dict]:
         if not b:
@@ -748,12 +827,14 @@ async def get_preview(
     group: str = "public", scan: str = "",
     contrast700: int = 5, contrast800: int = 5,
     channels: str = "700 800", background: str = "black",
+    experiment_id: Optional[str] = None,
 ):
     """Get a JPEG preview from the instrument."""
     if _image_driver and _odyssey_driver and hasattr(_image_driver.backend, "get_preview"):
+        instrument_scan = _resolve_instrument_scan(scan, experiment_id)
         try:
             jpeg_bytes = await _image_driver.backend.get_preview(
-                group, scan,
+                group, instrument_scan,
                 contrast_700=contrast700,
                 contrast_800=contrast800,
                 channels=channels,
@@ -769,11 +850,13 @@ async def get_preview(
 @app.get("/api/image/tiff/{channel}")
 async def download_tiff(
     channel: int, group: str = "public", scan: str = "",
+    experiment_id: Optional[str] = None,
 ):
     """Download raw TIFF for one channel (700 or 800)."""
     if _image_driver and _odyssey_driver and hasattr(_image_driver.backend, "download_channel"):
+        instrument_scan = _resolve_instrument_scan(scan, experiment_id)
         try:
-            tiff_bytes = await _image_driver.backend.download_channel(group, scan, channel)
+            tiff_bytes = await _image_driver.backend.download_channel(group, instrument_scan, channel)
             tiff_bytes = _tag_tiff(
                 tiff_bytes, scan_name=scan, channel=channel,
             )
@@ -1218,6 +1301,13 @@ async def _export_records_matching(
 
             scan_name = d.get("scan_name") or "unnamed"
             group = d.get("scan_group") or DEFAULT_GROUP
+            # Use this record's own experiment_id to compute the
+            # instrument-side prefixed name. Records saved before the
+            # prefix scheme have no experiment_id, in which case
+            # _resolve_instrument_scan falls through unchanged.
+            instrument_scan_name = _resolve_instrument_scan(
+                scan_name, (d.get("experiment_id") or "").strip(),
+            )
             safe_scan = "".join(
                 c if c.isalnum() or c in "-_" else "_" for c in scan_name
             )
@@ -1230,7 +1320,7 @@ async def _export_records_matching(
                 for ch in (700, 800):
                     try:
                         data = await _image_driver.backend.download_channel(
-                            group, scan_name, ch,
+                            group, instrument_scan_name, ch,
                         )
                         if data:
                             data = _tag_tiff(
@@ -1241,7 +1331,7 @@ async def _export_records_matching(
                     except Exception as e:
                         logging.info(
                             "Export: could not fetch %s/%s-%d: %s",
-                            group, scan_name, ch, e,
+                            group, instrument_scan_name, ch, e,
                         )
 
             if not tiff_wrote:
@@ -1401,48 +1491,6 @@ async def diagnostics_status():
         "raw_html": _odyssey_driver._last_status_html,
         "parsed": parsed,
     }
-
-
-@app.post("/api/scan/reset")
-async def reset_instrument():
-    """Force the instrument back to Idle. Sends Cancel via the scan
-    capability, then a status-page force_stop, then re-reads state.
-
-    Each step is independently try/excepted so that a failure of one
-    doesn't prevent the next: cancel may 404 if the scanner thinks no
-    scan is in flight, but the status-page stop will still pull motor
-    movement / partial scans down. Returns the final observed state so
-    the UI can update its status display.
-    """
-    if _scan_driver is None:
-        return {"status": "no-op", "note": "no instrument in this mode"}
-
-    errors = []
-    try:
-        await _scan_driver.cancel()
-    except Exception as e:
-        errors.append(f"cancel: {type(e).__name__}: {e}")
-
-    if _status_driver is not None and hasattr(_status_driver.backend, "force_stop"):
-        try:
-            await _status_driver.backend.force_stop()
-        except Exception as e:
-            errors.append(f"force_stop: {type(e).__name__}: {e}")
-
-    final_state = "Unknown"
-    try:
-        if _status_driver is not None:
-            reading = await _status_driver.read()
-            final_state = reading.state
-    except Exception as e:
-        errors.append(f"read_status: {type(e).__name__}: {e}")
-
-    _scan_state["state"] = final_state
-    _scan_state["progress"] = 0
-    _scan_state["time_remaining"] = ""
-    await _broadcast({"type": "status", **_scan_state})
-
-    return {"status": "ok", "state": final_state, "warnings": errors}
 
 
 @app.post("/api/quit")
