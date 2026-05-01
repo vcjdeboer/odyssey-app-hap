@@ -79,14 +79,103 @@ rsync "${RSYNC_BASE[@]}" \
   --exclude 'docs' \
   "${PLR_SRC}/pylabrobot/" "${DEST}/pylabrobot/"
 
-# ---- top-level: requirements + lab-tuned launcher ----
+# ---- top-level: requirements + lab-tuned launcher + icon ----
 cp "${REPO_ROOT}/requirements.txt" "${DEST}/requirements.txt"
+cp "${REPO_ROOT}/scripts/odyssey.ico" "${DEST}/odyssey.ico"
+
+cat > "${DEST}/make_desktop_shortcut.bat" <<'BAT'
+@echo off
+setlocal
+:: Build TWO Desktop shortcuts:
+::   "Odyssey Server"  -> run.bat        (starts uvicorn)
+::   "Odyssey App"     -> open_app.bat   (opens Chrome at localhost:8000)
+:: Workflow on the lab box: click Server first, wait for the
+:: "Application startup complete" line, then click App. This avoids
+:: the timing race where Chrome opened before the server was ready.
+::
+:: Run this once after the first copy of the deploy folder; safe to
+:: re-run any time (it just rebuilds both shortcuts).
+
+cd /d "%~dp0"
+set "HERE=%CD%"
+set "ICON=%HERE%\odyssey.ico"
+set "DESKTOP=%USERPROFILE%\Desktop"
+
+if not exist "%HERE%\run.bat" (
+    echo ERROR: run.bat not found in %HERE%. Run this from the deploy folder.
+    pause
+    exit /b 1
+)
+if not exist "%HERE%\open_app.bat" (
+    echo ERROR: open_app.bat not found in %HERE%.
+    pause
+    exit /b 1
+)
+
+set "PS_TMP=%TEMP%\odyssey_make_shortcuts.ps1"
+> "%PS_TMP%" echo $ws = New-Object -ComObject WScript.Shell
+>> "%PS_TMP%" echo $a = $ws.CreateShortcut('%DESKTOP%\Odyssey Server.lnk')
+>> "%PS_TMP%" echo $a.TargetPath = '%HERE%\run.bat'
+>> "%PS_TMP%" echo $a.WorkingDirectory = '%HERE%'
+>> "%PS_TMP%" echo $a.IconLocation = '%ICON%'
+>> "%PS_TMP%" echo $a.Description = 'Odyssey — start the local server'
+>> "%PS_TMP%" echo $a.Save()
+>> "%PS_TMP%" echo $b = $ws.CreateShortcut('%DESKTOP%\Odyssey App.lnk')
+>> "%PS_TMP%" echo $b.TargetPath = '%HERE%\open_app.bat'
+>> "%PS_TMP%" echo $b.WorkingDirectory = '%HERE%'
+>> "%PS_TMP%" echo $b.IconLocation = '%ICON%'
+>> "%PS_TMP%" echo $b.Description = 'Odyssey — open the app in Chrome'
+>> "%PS_TMP%" echo $b.Save()
+
+echo.
+echo Creating Desktop shortcuts...
+echo   "Odyssey Server" -^> %HERE%\run.bat
+echo   "Odyssey App"    -^> %HERE%\open_app.bat
+echo   Icon:               %ICON%
+echo.
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_TMP%"
+set "PS_RC=%ERRORLEVEL%"
+del "%PS_TMP%" >nul 2>&1
+
+if not "%PS_RC%"=="0" (
+    echo PowerShell exited with code %PS_RC%. See the manual fallback below.
+    goto manual
+)
+if not exist "%DESKTOP%\Odyssey Server.lnk" goto manual
+if not exist "%DESKTOP%\Odyssey App.lnk"    goto manual
+
+echo Done. Two icons on your Desktop:
+echo   Odyssey Server  — click first
+echo   Odyssey App     — click after "Application startup complete"
+pause
+exit /b 0
+
+:manual
+echo.
+echo --- MANUAL FALLBACK ---
+echo If the script can't create the shortcuts, do it by hand:
+echo.
+echo Server shortcut:
+echo   1. Right-click run.bat ^> Send to ^> Desktop (create shortcut)
+echo   2. Right-click the new shortcut ^> Properties ^> Change Icon ^>
+echo      Browse to %ICON%
+echo   3. Rename to "Odyssey Server"
+echo.
+echo App shortcut:
+echo   1. Right-click open_app.bat ^> Send to ^> Desktop (create shortcut)
+echo   2. Same Change Icon step.
+echo   3. Rename to "Odyssey App"
+echo.
+pause
+exit /b 1
+BAT
 
 cat > "${DEST}/run.bat" <<'BAT'
 @echo off
 cd /d "%~dp0"
 
-echo === Odyssey Western Blot Imager (lab deploy) ===
+echo === Odyssey Western Blot Imager — server ===
 echo.
 
 python --version >nul 2>&1
@@ -108,23 +197,16 @@ if errorlevel 1 (
 :: packages without a pip install of either.
 set "PYTHONPATH=%CD%;%PYTHONPATH%"
 
-:: Browser-open is done from the .bat side rather than via Python's
-:: webbrowser.open() — on Windows the latter often resolves "default
-:: browser" to IE for programmatic launches even when Chrome is the
-:: user's preferred browser. We launch the full Chrome.exe path with
-:: --new-window so Chrome forces a brand-new window and brings it to
-:: the foreground. /b runs the helper without creating a visible
-:: console window; ping is used as a portable ~2 s sleep.
+:: We deliberately don't auto-open Chrome here. The earlier auto-open
+:: raced the FastAPI startup hook — Chrome hit localhost:8000 before
+:: uvicorn finished authenticating against the instrument and the user
+:: saw ERR_CONNECTION_REFUSED. Now there are two Desktop shortcuts:
+::   "Odyssey Server" → this file (starts uvicorn)
+::   "Odyssey App"    → open_app.bat (opens Chrome at localhost:8000)
+:: Click Server first; once you see "Application startup complete",
+:: click App.
 set ODYSSEY_OPEN_BROWSER=0
-set "CHROME_EXE=C:\Program Files\Google\Chrome\Application\chrome.exe"
-start /b "" cmd /c "ping -n 3 127.0.0.1 >nul & start "" "%CHROME_EXE%" --new-window http://localhost:8000"
 
-:: Headless launch when credentials.bat exists next to run.bat (copy
-:: credentials.bat.example to credentials.bat and fill in your values
-:: once on the lab box). Otherwise prompt directly for the instrument
-:: details — both launchers always connect to real hardware. (Simulated
-:: mode is still available for Mac dev: just run uvicorn directly with
-:: ODYSSEY_HOST unset.)
 if exist credentials.bat (
     call credentials.bat
     echo Loaded credentials.bat — connecting to %ODYSSEY_HOST% as %ODYSSEY_USER%
@@ -139,57 +221,28 @@ if exist credentials.bat (
 )
 
 echo.
-echo Starting server at http://localhost:8000  (browser will open shortly)
-echo Press Ctrl+C to stop.
+echo Server starting at http://localhost:8000
+echo Wait for "Application startup complete", then click "Odyssey App"
+echo on the Desktop (or type localhost:8000 in Chrome).
+echo Press Ctrl+C here to stop the server.
 echo.
 uvicorn odyssey_app.app:app --host 0.0.0.0 --port 8000
 pause
 BAT
 
-cat > "${DEST}/run-server-only.bat" <<'BAT'
+cat > "${DEST}/open_app.bat" <<'BAT'
 @echo off
-cd /d "%~dp0"
-
-echo === Odyssey Western Blot Imager (server only) ===
-echo.
-echo This is the minimal launcher: starts uvicorn and stops there.
-echo Open Chrome yourself afterwards: http://localhost:8000
-echo.
-
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Python not found. Install Python 3.11+ and add to PATH.
-    pause
-    exit /b 1
+:: Open Chrome at the running Odyssey app. Click this AFTER you see
+:: "Application startup complete" in the "Odyssey Server" cmd window
+:: — clicking too early gives ERR_CONNECTION_REFUSED.
+set "CHROME_EXE=C:\Program Files\Google\Chrome\Application\chrome.exe"
+if not exist "%CHROME_EXE%" (
+    echo Chrome not found at %CHROME_EXE%.
+    echo Falling back to the Windows default browser.
+    start "" http://localhost:8000
+    exit /b 0
 )
-
-pip show fastapi >nul 2>&1
-if errorlevel 1 (
-    echo Installing dependencies...
-    pip install -r requirements.txt
-    echo.
-)
-
-set "PYTHONPATH=%CD%;%PYTHONPATH%"
-
-if exist credentials.bat (
-    call credentials.bat
-    echo Loaded credentials.bat — connecting to %ODYSSEY_HOST% as %ODYSSEY_USER%
-) else (
-    set /p ODYSSEY_HOST="Odyssey IP [169.254.206.190]: "
-    if "%ODYSSEY_HOST%"=="" set ODYSSEY_HOST=169.254.206.190
-    set /p ODYSSEY_USER="Odyssey username [odyssey]: "
-    if "%ODYSSEY_USER%"=="" set ODYSSEY_USER=odyssey
-    set /p ODYSSEY_PASS="Odyssey password [odyssey]: "
-    if "%ODYSSEY_PASS%"=="" set ODYSSEY_PASS=odyssey
-)
-
-echo.
-echo Starting server at http://localhost:8000
-echo Press Ctrl+C to stop.
-echo.
-uvicorn odyssey_app.app:app --host 0.0.0.0 --port 8000
-pause
+start "" "%CHROME_EXE%" --new-window http://localhost:8000
 BAT
 
 cat > "${DEST}/credentials.bat.example" <<'BAT'
@@ -218,33 +271,56 @@ cat > "${DEST}/LAB_README.md" <<'MD'
 
 Self-contained snapshot. Built by `scripts/deploy_to_desktop.sh` on the
 Mac. Copy this whole folder to the lab Windows box's C: drive (e.g.
-`C:\odyssey\`) and double-click `run.bat`.
+`C:\odyssey\`).
 
 ## Layout
 - `plr_v4/`               — device package + the three capabilities the app uses
 - `odyssey_app/`          — FastAPI server, static UI, metadata schema, lab PID instance card
 - `pylabrobot/`           — vendored snapshot of upstream PLR (provides `BackendParams`)
 - `requirements.txt`
-- `run.bat`               — full launcher: server + auto-opens Chrome at localhost:8000
-- `run-server-only.bat`   — minimal launcher: server only, you open Chrome yourself
+- `run.bat`               — starts uvicorn (no auto-Chrome — see workflow below)
+- `open_app.bat`          — opens Chrome at http://localhost:8000
+- `make_desktop_shortcut.bat` — one-time helper to make two Desktop shortcuts
+- `odyssey.ico`           — icon used by both shortcuts
 - `credentials.bat.example` — copy to `credentials.bat` for headless launch (see below)
 
-## Two launchers — pick whichever fits the moment
-- **`run.bat`** is the everyday lab launcher: spawns uvicorn AND opens
-  Chrome (full path, `--new-window`) at `http://localhost:8000` after a
-  short delay. Use this when you just want to scan.
-- **`run-server-only.bat`** is the minimal launcher: starts uvicorn and
-  stops there. You open Chrome yourself. Useful when you want to launch
-  with the server in a separate cmd window without Chrome popping over
-  your work, or when running headless against curl/Python clients.
+## Two-shortcut workflow on the lab Windows box
+1. **Double-click "Odyssey Server"** (or `run.bat`). A cmd window opens, uvicorn starts.
+2. **Wait for the line "Application startup complete"** in that window — usually 5–10 s while the FastAPI startup hook authenticates against the Odyssey.
+3. **Double-click "Odyssey App"** (or `open_app.bat`). Chrome opens at `http://localhost:8000`.
+4. Use the app. To shut down: bring the server cmd window to the front and press Ctrl+C.
 
-Both honour `credentials.bat`; both load the same `pylabrobot` snapshot.
+This replaces the old auto-launching run.bat. The earlier auto-open
+race (Chrome hits the port before the server is ready, browser shows
+ERR_CONNECTION_REFUSED, manual refresh required) is gone — you control
+the timing.
+
+## Make the Desktop shortcuts
+On the lab box, double-click `make_desktop_shortcut.bat` once. It
+builds two icons on your Desktop:
+- **Odyssey Server** → `run.bat`
+- **Odyssey App**    → `open_app.bat`
+
+Both use `odyssey.ico`. Safe to re-run any time.
+
+If the helper fails ("MANUAL FALLBACK" in the cmd window), do each
+one by hand:
+1. Right-click the `.bat` → Send to → Desktop (create shortcut).
+2. Right-click the new Desktop shortcut → Properties → Change Icon → Browse to `C:\odyssey\odyssey.ico` → OK.
+3. Rename if you like.
+
+If a shortcut **exists but doesn't launch** (cmd window flashes and
+closes), the issue is almost always inside the `.bat` itself, not the
+shortcut. Test by double-clicking the `.bat` directly: if that also
+flashes-and-closes, Python isn't on PATH or `pip install -r
+requirements.txt` is failing. The cmd output usually names the cause;
+run from an already-open cmd window so the error message stays
+visible.
 
 ## First-time setup on the lab box (one-time)
 1. Copy `credentials.bat.example` to `credentials.bat`.
 2. Edit `credentials.bat` and fill in the real instrument host / user / password.
-3. Save. Done — `run.bat` from now on goes straight to the real instrument and
-   pops the browser at `http://localhost:8000` automatically. No prompts.
+3. Save. Done — `run.bat` from now on goes straight to the real instrument with no prompts.
 
 `credentials.bat` is **per-lab-box**: it stays on the C: drive, never travels back
 to the Mac, and is never regenerated by the deploy script. When you copy a fresh

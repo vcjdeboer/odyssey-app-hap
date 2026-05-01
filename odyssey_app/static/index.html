@@ -920,7 +920,7 @@ function applyScanSession() {
   // the button, or when a scan ends and the user navigates away.
   if (typeof LIVE_SCAN_STATES !== 'undefined' &&
       LIVE_SCAN_STATES.has(s) && ScanSession.scan_name &&
-      autoUpdateInterval === null) {
+      autoUpdateInterval === null && !_configuring) {
     startLivePreview();
   }
 
@@ -1121,6 +1121,43 @@ function uniquifyScanName(base, existing) {
   return `${stem}_${Date.now()}`;  // pathological fallback
 }
 
+let _configuring = false;
+let _configureCountdown = null;
+
+function _startConfigureCountdown() {
+  // ~7 s to match wait_initialization (FR-025). One light-touch
+  // visual: progress fill animates 0 → 100, status text shows the
+  // remaining whole seconds. No WebSocket churn, no extra API calls.
+  const status = document.getElementById('scanStatusText');
+  const fill = document.getElementById('progressFill');
+  if (status) status.textContent = 'Configuring… 7s';
+  if (fill) fill.style.width = '0%';
+  const start = Date.now();
+  const total = 7000;
+  _configureCountdown = setInterval(() => {
+    const elapsed = Date.now() - start;
+    const pct = Math.min(100, (elapsed / total) * 100);
+    if (fill) fill.style.width = pct + '%';
+    if (status) {
+      const remaining = Math.max(0, Math.ceil((total - elapsed) / 1000));
+      status.textContent = remaining > 0
+        ? `Configuring… ${remaining}s`
+        : 'Configuring…';
+    }
+    if (elapsed >= total) {
+      clearInterval(_configureCountdown);
+      _configureCountdown = null;
+    }
+  }, 100);
+}
+
+function _stopConfigureCountdown() {
+  if (_configureCountdown !== null) {
+    clearInterval(_configureCountdown);
+    _configureCountdown = null;
+  }
+}
+
 async function configureScan() {
   const data = collectRecord();
   const v = validateRunRecord(data);
@@ -1205,6 +1242,15 @@ async function configureScan() {
   updateViewButtons();
   renderCanvas();
 
+  // Defensive: block any background poller from rendering preview
+  // pixels during the 7 s init. If a stale state reading flickers
+  // through Scanning / Paused, refreshLivePreview won't accidentally
+  // pull the previous scan's JPEG (the instrument hands that back
+  // when asked about a scan name it doesn't know yet).
+  _configuring = true;
+  stopLivePreview();
+  _startConfigureCountdown();
+
   try {
     const resp = await fetch('/api/scan/configure', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data),
@@ -1215,7 +1261,12 @@ async function configureScan() {
     } else {
       showToast('Error: ' + (result.detail || 'Unknown'), true);
     }
-  } catch (e) { showToast('Error: ' + e.message, true); }
+  } catch (e) {
+    showToast('Error: ' + e.message, true);
+  } finally {
+    _configuring = false;
+    _stopConfigureCountdown();
+  }
 }
 
 async function startScan() {
@@ -1801,6 +1852,7 @@ function stopLivePreview() {
 }
 
 async function refreshLivePreview() {
+  if (_configuring) return;  // never paint pixels during Configure init
   if (!ScanSession.scan_name) return;
   const state = ScanSession.state || 'Idle';
   // Once the scan is terminal AND we already have TIFFs in the cache,
