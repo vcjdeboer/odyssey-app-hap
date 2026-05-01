@@ -69,7 +69,7 @@ except ImportError:
     def tag_tiff_with_identity(raw, *a, **kw): return raw
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageOps
     import numpy as np
     PIL_AVAILABLE = True
 except ImportError:
@@ -787,6 +787,68 @@ async def download_tiff(
     raise HTTPException(status_code=404, detail="Not available in simulated mode")
 
 
+def _apply_bc(img: "Image.Image", brightness: int, contrast: int) -> "Image.Image":
+    """Apply brightness + contrast matching the UI canvas formula.
+
+    Mirrors ``applyBrightnessContrastTo`` in index.html exactly:
+        v' = cf * ((v + brightness) - 128) + 128
+        cf = (259 * (contrast + 255)) / (255 * (259 - contrast))
+    so server-side exports match what the user sees on screen.
+    """
+    if brightness == 0 and contrast == 0:
+        return img
+    arr = np.array(img, dtype=np.int16)
+    cf = (259 * (contrast + 255)) / (255 * (259 - contrast))
+    arr = (cf * (arr + brightness - 128) + 128).clip(0, 255).astype(np.uint8)
+    return Image.fromarray(arr, img.mode)
+
+
+async def _render_export_image(
+    group: str, scan: str, view: str,
+    b700: int, c700: int, b800: int, c800: int,
+    inverted: bool,
+) -> Optional["Image.Image"]:
+    """Compose the actual scan view into a PIL RGB image.
+
+    Mirrors the UI's canvas pipeline so the rendered file matches what
+    Vincent sees on screen at the moment of export. Pulls each channel's
+    pre-tinted JPEG from the instrument (or the simulator placeholder),
+    applies per-channel brightness/contrast, then composites per the
+    requested view (single channel or 'lighten'-blended overlay).
+    """
+    needs700 = view in ("700", "overlay")
+    needs800 = view in ("800", "overlay")
+    ch700_bytes = await _render_single_channel(group, scan, 700) if needs700 else b""
+    ch800_bytes = await _render_single_channel(group, scan, 800) if needs800 else b""
+
+    img700 = Image.open(io.BytesIO(ch700_bytes)).convert("RGB") if ch700_bytes else None
+    img800 = Image.open(io.BytesIO(ch800_bytes)).convert("RGB") if ch800_bytes else None
+    if img700 is not None:
+        img700 = _apply_bc(img700, b700, c700)
+    if img800 is not None:
+        img800 = _apply_bc(img800, b800, c800)
+
+    if view == "700":
+        out = img700
+    elif view == "800":
+        out = img800
+    elif view == "overlay":
+        if img700 is not None and img800 is not None:
+            if img700.size != img800.size:
+                img800 = img800.resize(img700.size)
+            out = ImageChops.lighter(img700, img800)
+        else:
+            out = img700 or img800
+    else:
+        out = None
+
+    if out is None:
+        return None
+    if inverted:
+        out = ImageOps.invert(out)
+    return out
+
+
 @app.post("/api/image/export")
 async def export_image(data: dict):
     """Render an image export and ATTACH it to the current experiment.
@@ -817,23 +879,34 @@ async def export_image(data: dict):
     if not scan_name:
         raise HTTPException(status_code=400, detail="scan_name is required")
 
-    # TODO: Load real TIFF data from scans directory, apply display settings
-    # For now generate a placeholder
-    width, height = 400, 300
-    footer_height = 80 if include_footer else 0
-    total_height = height + footer_height
+    group = (data.get("scan_group") or DEFAULT_GROUP).strip() or DEFAULT_GROUP
+    b700 = int(data.get("brightness_700", 0) or 0)
+    c700 = int(data.get("contrast_700", 0) or 0)
+    b800 = int(data.get("brightness_800", 0) or 0)
+    c800 = int(data.get("contrast_800", 0) or 0)
+    inverted = bool(data.get("inverted", False))
 
-    img = Image.new("RGB", (width, total_height), (0, 0, 0))
+    rendered = await _render_export_image(
+        group, scan_name, view, b700, c700, b800, c800, inverted,
+    )
+    if rendered is None:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"No image data available for scan '{scan_name}' on view "
+                f"'{view}'. Run the scan first, then export."
+            ),
+        )
+
+    width, height = rendered.size
+    footer_height = 80 if include_footer else 0
+    img = Image.new("RGB", (width, height + footer_height), (0, 0, 0))
+    img.paste(rendered, (0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Simulated bands
-    draw.text((width // 2 - 40, height // 2 - 10), "Scan Data", fill=(100, 100, 100))
-
     if include_footer and metadata:
-        # Draw metadata footer
-        draw.rectangle([(0, height), (width, total_height)], fill=(30, 30, 30))
+        draw.rectangle([(0, height), (width, height + footer_height)], fill=(30, 30, 30))
         y = height + 5
-        font_size = 10
         antibodies = metadata.get("primary_antibodies", [])
         for ab in antibodies[:2]:
             target = ab.get("target", "")
@@ -846,7 +919,6 @@ async def export_image(data: dict):
                 text = f"{ch}nm: {target} ({vendor} {catalog}, {dilution})"
                 draw.text((5, y), text, fill=color)
                 y += 14
-
         settings = metadata.get("scan_settings", {})
         res = settings.get("resolution_um", "")
         operator = metadata.get("operator", "")
@@ -1383,7 +1455,7 @@ async def quit_app():
     time to flush to the client.
     """
     state = (_scan_state.get("state") or "Idle")
-    busy = {"Initializing", "Scanning", "Paused"}
+    busy = {"Configured", "Initializing", "Scanning", "Paused"}
     if state in busy:
         raise HTTPException(
             status_code=409,

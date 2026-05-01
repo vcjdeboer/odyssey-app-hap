@@ -149,6 +149,58 @@ uvicorn odyssey_app.app:app --host 0.0.0.0 --port 8000
 pause
 BAT
 
+cat > "${DEST}/run-server-only.bat" <<'BAT'
+@echo off
+cd /d "%~dp0"
+
+echo === Odyssey Western Blot Imager (server only) ===
+echo.
+echo This is the minimal launcher: starts uvicorn and stops there.
+echo Open Chrome yourself afterwards: http://localhost:8000
+echo.
+
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Python not found. Install Python 3.11+ and add to PATH.
+    pause
+    exit /b 1
+)
+
+pip show fastapi >nul 2>&1
+if errorlevel 1 (
+    echo Installing dependencies...
+    pip install -r requirements.txt
+    echo.
+)
+
+set "PYTHONPATH=%CD%;%PYTHONPATH%"
+
+if exist credentials.bat (
+    call credentials.bat
+    echo Loaded credentials.bat — connecting to %ODYSSEY_HOST% as %ODYSSEY_USER%
+) else (
+    set ODYSSEY_HOST=
+    set /p MODE="Connect to real Odyssey? (y/N): "
+    if /i "%MODE%"=="y" (
+        set /p ODYSSEY_HOST="Odyssey IP [169.254.206.190]: "
+        if "%ODYSSEY_HOST%"=="" set ODYSSEY_HOST=169.254.206.190
+        set /p ODYSSEY_USER="Odyssey username [odyssey]: "
+        if "%ODYSSEY_USER%"=="" set ODYSSEY_USER=odyssey
+        set /p ODYSSEY_PASS="Odyssey password [odyssey]: "
+        if "%ODYSSEY_PASS%"=="" set ODYSSEY_PASS=odyssey
+    ) else (
+        echo Running in simulated mode.
+    )
+)
+
+echo.
+echo Starting server at http://localhost:8000
+echo Press Ctrl+C to stop.
+echo.
+uvicorn odyssey_app.app:app --host 0.0.0.0 --port 8000
+pause
+BAT
+
 cat > "${DEST}/credentials.bat.example" <<'BAT'
 @echo off
 :: ---------------------------------------------------------------
@@ -182,8 +234,20 @@ Mac. Copy this whole folder to the lab Windows box's C: drive (e.g.
 - `odyssey_app/`          — FastAPI server, static UI, metadata schema, lab PID instance card
 - `pylabrobot/`           — vendored snapshot of upstream PLR (provides `BackendParams`)
 - `requirements.txt`
-- `run.bat`               — sets PYTHONPATH, loads credentials.bat if present, launches uvicorn
+- `run.bat`               — full launcher: server + auto-opens Chrome at localhost:8000
+- `run-server-only.bat`   — minimal launcher: server only, you open Chrome yourself
 - `credentials.bat.example` — copy to `credentials.bat` for headless launch (see below)
+
+## Two launchers — pick whichever fits the moment
+- **`run.bat`** is the everyday lab launcher: spawns uvicorn AND opens
+  Chrome (full path, `--new-window`) at `http://localhost:8000` after a
+  short delay. Use this when you just want to scan.
+- **`run-server-only.bat`** is the minimal launcher: starts uvicorn and
+  stops there. You open Chrome yourself. Useful when you want to launch
+  with the server in a separate cmd window without Chrome popping over
+  your work, or when running headless against curl/Python clients.
+
+Both honour `credentials.bat`; both load the same `pylabrobot` snapshot.
 
 ## First-time setup on the lab box (one-time)
 1. Copy `credentials.bat.example` to `credentials.bat`.

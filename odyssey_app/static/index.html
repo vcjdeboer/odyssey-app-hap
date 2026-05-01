@@ -210,6 +210,7 @@
   .btn-success { background: var(--success); color: #fff; }
   .btn-secondary { background: var(--surface2); color: var(--text); }
   .btn-warning { background: var(--warning); color: #000; }
+  .btn-danger  { background: var(--danger);  color: #fff; }
   .btn-small { padding: 3px 8px; font-size: 10px; }
   .btn-row { display: flex; gap: 6px; margin-top: 8px; }
 
@@ -284,9 +285,35 @@
   .view-btn.overlay.active { background: var(--overlay); color: #000; }
   .view-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
+  .alert-backdrop {
+    display: none;
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0, 0, 0, 0.5);
+    align-items: center; justify-content: center;
+  }
+  .alert-backdrop.show { display: flex; }
+  .alert-card {
+    background: var(--surface-raised); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 22px 28px; min-width: 320px; max-width: 480px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  }
+  .alert-card h3 { margin: 0 0 10px; color: var(--danger); font-weight: 600; }
+  .alert-card p { margin: 0 0 18px; color: var(--text); white-space: pre-wrap; }
+
+  .estimate-line {
+    margin: 6px 0 2px;
+    padding: 6px 10px;
+    background: var(--surface2);
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .estimate-line b { color: var(--text); font-variant-numeric: tabular-nums; }
+
   .image-viewer {
     flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
-    display: flex; align-items: center; justify-content: center; min-height: 300px;
+    display: flex; align-items: center; justify-content: center; min-height: 640px;
     position: relative; overflow: hidden;
   }
   .image-viewer canvas { background: #000; max-width: 100%; max-height: 100%; cursor: grab; }
@@ -436,8 +463,8 @@
     <a id="instrumentPid" href="#" target="_blank" rel="noopener"
        title="Persistent instrument identifier — opens the b2inst landing page">—</a>
     <span><span class="status-dot" id="statusDot"></span> <span id="statusText">Idle</span></span>
-    <button class="btn btn-small" id="btnQuit" onclick="quitApp()"
-            title="Stop the server cleanly and exit. Disabled while a scan is in progress.">Quit app</button>
+    <button class="btn btn-small btn-danger" id="btnQuit" onclick="quitApp()"
+            title="Stop the server cleanly and exit. Disabled while a scan is in progress.">Quit</button>
   </div>
 </header>
 
@@ -468,6 +495,10 @@
     <div class="form-row">
       <div class="field"><label>Width (cm)</label><input type="number" id="width" value="10" min="1" max="25"></div>
       <div class="field"><label>Height (cm)</label><input type="number" id="height" value="10" min="1" max="25"></div>
+    </div>
+    <div class="estimate-line" id="estimateLine"
+         title="Predicted scan time at the current resolution/quality/area. Updates as you change settings.">
+      Estimated scan time: <b id="estimateValue">—</b>
     </div>
     <div class="form-row full">
       <div class="field"><label>Group (locked, FR-018)</label>
@@ -734,6 +765,18 @@ Affects the 800 view and the 800-tinted layer in Overlay.">
 
 <div class="toast" id="toast"></div>
 
+<!-- Confirmable error/info dialog (showAlert). Used for validation
+     failures and any error the user MUST acknowledge before continuing. -->
+<div class="alert-backdrop" id="alertBackdrop">
+  <div class="alert-card">
+    <h3 id="alertTitle">Error</h3>
+    <p id="alertBody"></p>
+    <div style="text-align:right">
+      <button class="btn btn-primary" id="alertOk" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
 <script>
 'use strict';
 /* ============================================================================
@@ -875,8 +918,13 @@ function applyScanSession() {
 
   // Quit must be disabled while a scan is actively in flight. Match
   // the server-side gate in /api/quit so the UI never enables a
-  // button that the API would refuse.
-  const busy = (s === 'Initializing' || s === 'Scanning' || s === 'Paused');
+  // button that the API would refuse. ``busy`` is the set of states
+  // where the user has committed to a scan (everything from Configure
+  // onward, except plain Idle / terminal). Configured is included
+  // because the instrument has been armed and the next user action is
+  // typically Start — we don't want exports/attach/quit to race that.
+  const busy = (s === 'Configured' || s === 'Initializing'
+                || s === 'Scanning'   || s === 'Paused');
   const quitBtn = document.getElementById('btnQuit');
   if (quitBtn) {
     quitBtn.disabled = busy;
@@ -923,7 +971,14 @@ async function resetInstrument() {
 }
 
 async function quitApp() {
-  if (!confirm('Stop the server and exit?\n\nThis will close the connection to the Odyssey and shut down the app.')) return;
+  const ok = confirm(
+    "Quit Odyssey Western Blot Imager?\n\n"
+    + "• Closes the HTTP connection to the instrument\n"
+    + "• Shuts down the local server\n"
+    + "• Any unsaved scan settings in this tab will be lost\n\n"
+    + "(Records and exports already on disk are kept.)"
+  );
+  if (!ok) return;
   try {
     const resp = await fetch('/api/quit', {method: 'POST'});
     if (!resp.ok) {
@@ -934,11 +989,36 @@ async function quitApp() {
   } catch (e) {
     // Server may have died before the response landed — that's fine.
   }
+  // Stop background pollers + close the WebSocket BEFORE swapping the
+  // page out, so we don't have orphan timers firing fetches against a
+  // server that's exiting and a closed WS retrying every 2 s.
+  stopLivePreview();
+  if (typeof statusSafetyNetInterval !== 'undefined' && statusSafetyNetInterval) {
+    clearInterval(statusSafetyNetInterval);
+    statusSafetyNetInterval = null;
+  }
+  if (ws) {
+    ws.onclose = null;     // disarm the auto-reconnect
+    try { ws.close(); } catch (e) {}
+  }
+  // Replace the page with a friendly confirmation screen, themed to
+  // match the app so the transition isn't jarring.
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#fbf8f1';
+  const surface = getComputedStyle(document.documentElement).getPropertyValue('--surface-raised').trim() || '#ffffff';
+  const text = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#333';
+  const dim = getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim() || '#888';
+  const ok_color = getComputedStyle(document.documentElement).getPropertyValue('--success').trim() || '#45c46e';
   document.body.innerHTML =
-    '<div style="display:flex;align-items:center;justify-content:center;'
-    + 'height:100vh;font-family:system-ui;color:#666;text-align:center">'
-    + '<div><h2>Server stopped</h2><p>You can close this tab.</p></div>'
-    + '</div>';
+    `<div style="display:flex;align-items:center;justify-content:center;`
+    + `min-height:100vh;background:${bg};font-family:system-ui;color:${text};text-align:center">`
+    +   `<div style="padding:36px 48px;background:${surface};border-radius:12px;`
+    +        `box-shadow:0 6px 24px rgba(0,0,0,0.08);max-width:440px">`
+    +     `<div style="font-size:48px;color:${ok_color};line-height:1">✓</div>`
+    +     `<h2 style="margin:18px 0 8px;font-weight:500">Server stopped</h2>`
+    +     `<p style="margin:0 0 4px;color:${dim}">The Odyssey driver has been disconnected and the local server has shut down cleanly.</p>`
+    +     `<p style="margin:14px 0 0;color:${dim};font-size:13px">You can close this tab — to start a fresh session, run <code>run.bat</code> again.</p>`
+    +   `</div>`
+    + `</div>`;
 }
 
 function buttonStatesFor(state) {
@@ -1052,7 +1132,12 @@ async function configureScan() {
   const data = collectRecord();
   const v = validateRunRecord(data);
   if (!v.ok) {
-    showToast('Missing: ' + v.missing.join(', '), true);
+    // Confirmable modal — these are easy to miss as a fly-out toast,
+    // and the user has to fix the field before Configure can run.
+    await showAlert(
+      'Missing required fields',
+      `Configure cannot proceed until these are filled in:\n\n  • ${v.missing.join('\n  • ')}\n\nClick OK to return to the form. The first missing field will be focused.`
+    );
     const focusTarget = v.firstFocus.find(([_, id]) => id);
     if (focusTarget) {
       const el = document.getElementById(focusTarget[1]);
@@ -1208,6 +1293,11 @@ async function onScanComplete(msg) {
     return;
   }
 
+  // Fresh scan finished → start at fit-to-viewer so the user sees the
+  // whole new image. (populateChannelCache used to do this, but live-
+  // preview polls also go through it; only the explicit scan_complete
+  // event should re-fit.)
+  resetViewTransform();
   // FR-004: auto-display the first available channel.
   if (ChannelCache.ch700) setActiveView('700');
   else if (ChannelCache.ch800) setActiveView('800');
@@ -1224,7 +1314,12 @@ async function populateChannelCache(env) {
   if (env.ch800) ChannelCache.ch800 = await decodeBase64ToBitmap(env.ch800);
 
   updateViewButtons();
-  resetViewTransform();
+  // NOTE: zoom is intentionally NOT reset here. The live-preview poll
+  // calls populateChannelCache when transitioning JPEG→TIFF post-scan,
+  // and resetting zoom there would erase any zoom the user set during
+  // the scan. The explicit reset lives in onScanComplete (firing once
+  // per scan via the WebSocket scan_complete event) and in the user-
+  // driven Reset view button.
 }
 
 async function decodeBase64ToBitmap(ch) {
@@ -1329,7 +1424,9 @@ function renderCanvas() {
   } else {
     srcW = bitmap.width; srcH = bitmap.height;
   }
-  const fitScale = Math.min(maxW / srcW, maxH / srcH, 1);
+  // No 1:1 cap — small scans (e.g. low-res 3×3 cm previews) get
+  // upscaled to fill the viewer so the user actually sees the bands.
+  const fitScale = Math.min(maxW / srcW, maxH / srcH);
   canvas.width = Math.max(1, Math.round(srcW * fitScale));
   canvas.height = Math.max(1, Math.round(srcH * fitScale));
 
@@ -1609,7 +1706,8 @@ function drawLiveJpeg(bitmap) {
   canvas.style.display = 'block';
   const maxW = viewer.clientWidth - 20;
   const maxH = viewer.clientHeight - 20;
-  const fitScale = Math.min(maxW / bitmap.width, maxH / bitmap.height, 1);
+  // Same uncapped fit as renderCanvas — fill the viewer at small res.
+  const fitScale = Math.min(maxW / bitmap.width, maxH / bitmap.height);
   canvas.width = Math.max(1, Math.round(bitmap.width * fitScale));
   canvas.height = Math.max(1, Math.round(bitmap.height * fitScale));
   const ctx = canvas.getContext('2d');
@@ -1708,6 +1806,14 @@ async function attachExport(format, includeFooter) {
   data.format = format;
   data.include_footer = includeFooter;
   data.view = ViewerState.active_view || '700';
+  // Mirror the on-screen render in the saved file: send the current
+  // per-channel B/C and invert state so the server's compositor lands
+  // on the same image the user is looking at.
+  data.brightness_700 = ViewerState.brightness_700;
+  data.contrast_700   = ViewerState.contrast_700;
+  data.brightness_800 = ViewerState.brightness_800;
+  data.contrast_800   = ViewerState.contrast_800;
+  data.inverted       = ViewerState.inverted;
 
   try {
     const resp = await fetch('/api/image/export', {
@@ -2209,6 +2315,71 @@ function showToast(msg, isError) {
   toast.className = 'toast show' + (isError ? ' error' : '');
   setTimeout(() => toast.classList.remove('show'), 3000);
 }
+
+/* ============================================================================
+   Confirmable error dialog — for things the user MUST acknowledge (validation
+   failures, etc.). Toasts fly out after 3 s and people miss them.
+============================================================================ */
+
+function showAlert(title, message) {
+  return new Promise((resolve) => {
+    const backdrop = document.getElementById('alertBackdrop');
+    document.getElementById('alertTitle').textContent = title;
+    document.getElementById('alertBody').textContent = message;
+    backdrop.classList.add('show');
+    const okBtn = document.getElementById('alertOk');
+    const onClick = () => {
+      okBtn.removeEventListener('click', onClick);
+      backdrop.classList.remove('show');
+      resolve();
+    };
+    okBtn.addEventListener('click', onClick);
+    okBtn.focus();
+  });
+}
+
+/* ============================================================================
+   Live scan-time estimate. Re-fetches on any settings change (debounced)
+   so the user sees how long the next scan will take BEFORE clicking
+   Configure.
+============================================================================ */
+
+let _estimateTimer = null;
+
+function _scheduleEstimate() {
+  if (_estimateTimer !== null) clearTimeout(_estimateTimer);
+  _estimateTimer = setTimeout(_fetchEstimate, 400);
+}
+
+async function _fetchEstimate() {
+  const valEl = document.getElementById('estimateValue');
+  const params = new URLSearchParams({
+    resolution: (document.getElementById('resolution')?.value || '169'),
+    quality:    (document.getElementById('quality')?.value || 'medium'),
+    x0: '0', y0: '0',
+    width:  (document.getElementById('width')?.value || '10'),
+    height: (document.getElementById('height')?.value || '10'),
+  });
+  try {
+    const resp = await fetch(`/api/scan/estimate?${params}`);
+    if (!resp.ok) { valEl.textContent = '—'; return; }
+    const body = await resp.json();
+    valEl.textContent = body.estimate || '—';
+  } catch (e) {
+    valEl.textContent = '—';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  for (const id of ['resolution', 'quality', 'width', 'height']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', _scheduleEstimate);
+    if (el) el.addEventListener('change', _scheduleEstimate);
+  }
+  // Fetch once on load so the field shows something useful even before
+  // the user touches anything.
+  _fetchEstimate();
+});
 
 /* ============================================================================
    Init
