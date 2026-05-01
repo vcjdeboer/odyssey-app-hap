@@ -889,7 +889,7 @@ def _apply_bc(img: "Image.Image", brightness: int, contrast: int) -> "Image.Imag
 async def _render_export_image(
     group: str, scan: str, view: str,
     b700: int, c700: int, b800: int, c800: int,
-    inverted: bool,
+    bw: bool,
 ) -> Optional["Image.Image"]:
     """Compose the actual scan view into a PIL RGB image.
 
@@ -897,7 +897,10 @@ async def _render_export_image(
     Vincent sees on screen at the moment of export. Pulls each channel's
     pre-tinted JPEG from the instrument (or the simulator placeholder),
     applies per-channel brightness/contrast, then composites per the
-    requested view (single channel or 'lighten'-blended overlay).
+    requested view (single channel or 'lighter'-blended overlay).
+
+    ``bw=True`` desaturates the result so the saved file matches the
+    UI's grayscale-mode rendering.
     """
     needs700 = view in ("700", "overlay")
     needs800 = view in ("800", "overlay")
@@ -927,8 +930,11 @@ async def _render_export_image(
 
     if out is None:
         return None
-    if inverted:
-        out = ImageOps.invert(out)
+    if bw:
+        # Convert to grayscale then back to RGB so the rest of the
+        # pipeline (footer rendering, PNG/TIFF save) sees a uniform
+        # 3-channel image.
+        out = out.convert("L").convert("RGB")
     return out
 
 
@@ -967,10 +973,11 @@ async def export_image(data: dict):
     c700 = int(data.get("contrast_700", 0) or 0)
     b800 = int(data.get("brightness_800", 0) or 0)
     c800 = int(data.get("contrast_800", 0) or 0)
-    inverted = bool(data.get("inverted", False))
+    bw = bool(data.get("bw", False))
+    crop = data.get("crop")  # None or {x0, y0, x1, y1} normalized 0-1
 
     rendered = await _render_export_image(
-        group, scan_name, view, b700, c700, b800, c800, inverted,
+        group, scan_name, view, b700, c700, b800, c800, bw,
     )
     if rendered is None:
         raise HTTPException(
@@ -980,6 +987,21 @@ async def export_image(data: dict):
                 f"'{view}'. Run the scan first, then export."
             ),
         )
+
+    # Apply the user-marked crop region (normalized 0-1, canvas-relative)
+    # before footer rendering — so the footer's intrinsic size lines up
+    # with whatever the user actually wants exported.
+    if crop and isinstance(crop, dict):
+        try:
+            rw, rh = rendered.size
+            x0 = max(0, min(rw, int(float(crop.get("x0", 0)) * rw)))
+            y0 = max(0, min(rh, int(float(crop.get("y0", 0)) * rh)))
+            x1 = max(0, min(rw, int(float(crop.get("x1", 1)) * rw)))
+            y1 = max(0, min(rh, int(float(crop.get("y1", 1)) * rh)))
+            if x1 > x0 and y1 > y0:
+                rendered = rendered.crop((x0, y0, x1, y1))
+        except (ValueError, TypeError) as e:
+            logging.info("Ignoring malformed crop payload %r: %s", crop, e)
 
     width, height = rendered.size
     footer_height = 80 if include_footer else 0
@@ -1365,6 +1387,64 @@ async def _export_records_matching(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/diagnostics/tiff")
+async def diagnostics_tiff(scan: str, channel: int = 700,
+                            group: str = DEFAULT_GROUP,
+                            experiment_id: Optional[str] = None):
+    """Inspect a TIFF straight from the instrument.
+
+    Reports the raw byte count, the parsed image dimensions / mode /
+    bit depth, and the first 64 bytes hex. Use to confirm whether a
+    "small TIFF" is genuinely undersized (instrument returned a
+    thumbnail) or is the expected size for the scan dimensions.
+    """
+    if _image_driver is None or _odyssey_driver is None:
+        return {"mode": "simulated", "note": "no instrument in this mode"}
+    try:
+        instrument_scan = _resolve_instrument_scan(scan, experiment_id)
+        raw = await _image_driver.backend.download_channel(group, instrument_scan, channel)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+    out = {
+        "scan": scan,
+        "instrument_scan": instrument_scan,
+        "channel": channel,
+        "group": group,
+        "raw_bytes": len(raw),
+        "raw_kb": round(len(raw) / 1024, 1),
+        "first_bytes_hex": raw[:64].hex(),
+    }
+    if not raw:
+        out["note"] = "empty response"
+        return out
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as img:
+            out["pil_mode"] = img.mode
+            out["pil_size"] = list(img.size)
+            out["pil_format"] = img.format
+            tag_v2 = getattr(img, "tag_v2", None)
+            if tag_v2 is not None:
+                out["tiff_tags"] = {
+                    "BitsPerSample": list(tag_v2.get(258, ())),
+                    "Compression": tag_v2.get(259, None),
+                    "SamplesPerPixel": tag_v2.get(277, None),
+                    "ImageWidth": tag_v2.get(256, None),
+                    "ImageLength": tag_v2.get(257, None),
+                    "ImageDescription": (tag_v2.get(270, "") or "")[:300],
+                    "Software": tag_v2.get(305, None),
+                }
+            # Predicted raw size for these dimensions:
+            w, h = img.size
+            bps_total = sum(out["tiff_tags"].get("BitsPerSample") or [16])
+            out["predicted_raw_bytes"] = w * h * bps_total // 8
+            out["predicted_raw_kb"] = round(out["predicted_raw_bytes"] / 1024, 1)
+    except Exception as e:
+        out["pil_error"] = f"{type(e).__name__}: {e}"
+    return out
 
 
 @app.get("/api/diagnostics/probe")

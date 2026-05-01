@@ -675,7 +675,8 @@ Affects the 800 view and the 800-tinted layer in Overlay.">
       <input type="range" id="contrast_800" min="-100" max="100" value="0" oninput="onBrightnessContrast()">
       <span class="val" id="bc800Val">0/0</span>
     </div>
-    <button class="btn btn-small btn-secondary" id="btnInvert" onclick="invertImage()">Invert</button>
+    <button class="btn btn-small btn-secondary" id="btnBw" onclick="toggleBw()"
+            title="Toggle grayscale rendering. Off = the standard 700 nm red / 800 nm green view; On = pure intensity, useful for publication figures.">B&amp;W</button>
     <button class="btn btn-small btn-secondary" onclick="resetView()"
             title="Reset zoom, pan, brightness, contrast and invert">Reset view</button>
     <!-- Explicit zoom controls for users who prefer buttons over wheel scroll. -->
@@ -712,6 +713,11 @@ Affects the 800 view and the 800-tinted layer in Overlay.">
             title="Render the current view as a clean PNG (no footer) and attach it to this scan. Bundled in the experiment ZIP.">PNG clean</button>
     <button class="btn btn-small btn-secondary attach-btn" onclick="attachExport('tiff', true)"
             title="Render the current view as TIFF with embedded metadata and attach it to this scan. Bundled in the experiment ZIP.">TIFF + metadata</button>
+    <span style="margin-left:auto"></span>
+    <button class="btn btn-small btn-secondary" id="btnCrop" onclick="startCrop()"
+            title="Click and drag on the image to mark an export region. The next PNG/TIFF you attach will use just that region; everything else is ignored.">Crop region</button>
+    <button class="btn btn-small btn-secondary" id="btnClearCrop" onclick="clearCrop()" style="display:none"
+            title="Discard the marked crop region — exports go back to the full image.">Clear crop</button>
   </div>
 
   <!-- Location hints strip — clarifies where the different "save" paths write.
@@ -818,7 +824,8 @@ const ViewerState = {
   scale: 1.0,
   tx: 0,
   ty: 0,
-  inverted: false,
+  bw: false,
+  crop: null,    // null OR {x0, y0, x1, y1} normalized canvas-relative
   // Per-channel brightness/contrast (Vincent's lab feedback 2026-04-30 —
   // the two channels image different proteins; needing one global slider
   // to balance both is awkward). Range: -100..+100 for each, identical
@@ -1454,7 +1461,7 @@ function renderCanvas() {
   compose.width = canvas.width;
   compose.height = canvas.height;
   const cctx = compose.getContext('2d');
-  cctx.fillStyle = ViewerState.inverted ? '#fff' : '#000';
+  cctx.fillStyle = '#000';
   cctx.fillRect(0, 0, compose.width, compose.height);
 
   if (view === 'overlay') {
@@ -1475,7 +1482,7 @@ function renderCanvas() {
     drawChannelLayer(cctx, bitmap, tint, b, c);
   }
 
-  if (ViewerState.inverted) applyInversion(cctx, canvas.width, canvas.height);
+  // (B&W mode is handled inside drawChannelLayer — no post-pass needed.)
 
   // Blit to the visible canvas with the current zoom/pan transform (US4).
   ctx.save();
@@ -1493,11 +1500,12 @@ function renderCanvas() {
 
 function drawChannelLayer(ctx, bitmap, tintColor, brightness, contrast) {
   // Draw one channel's grayscale bitmap onto a fresh offscreen canvas,
-  // apply that channel's brightness/contrast in place, then multiply by
-  // the channel tint and blit to the destination. Doing B/C per-layer
-  // (rather than once at the end) lets 700 and 800 be balanced
-  // independently — the user's actual lab workflow when one channel's
-  // signal is much stronger than the other.
+  // apply that channel's brightness/contrast in place, then (unless
+  // B&W mode is on) multiply by the channel tint and blit. Doing B/C
+  // per-layer rather than once at the end lets 700 and 800 be
+  // balanced independently — the lab workflow when one channel's
+  // signal is much stronger than the other. B&W skips the tint so
+  // the image renders as pure intensity (publication-style).
   const w = ctx.canvas.width, h = ctx.canvas.height;
   const layer = document.createElement('canvas');
   layer.width = w; layer.height = h;
@@ -1506,11 +1514,13 @@ function drawChannelLayer(ctx, bitmap, tintColor, brightness, contrast) {
   if (brightness !== 0 || contrast !== 0) {
     applyBrightnessContrastTo(lctx, w, h, brightness, contrast);
   }
-  // Multiply by tint to give 700 red / 800 green.
-  lctx.globalCompositeOperation = 'multiply';
-  lctx.fillStyle = tintColor;
-  lctx.fillRect(0, 0, w, h);
-  lctx.globalCompositeOperation = 'source-over';
+  if (!ViewerState.bw) {
+    // Multiply by tint to give 700 red / 800 green.
+    lctx.globalCompositeOperation = 'multiply';
+    lctx.fillStyle = tintColor;
+    lctx.fillRect(0, 0, w, h);
+    lctx.globalCompositeOperation = 'source-over';
+  }
   ctx.drawImage(layer, 0, 0);
 }
 
@@ -1528,17 +1538,6 @@ function applyBrightnessContrastTo(ctx, w, h, brightness, contrast) {
   ctx.putImageData(imgData, 0, 0);
 }
 
-function applyInversion(ctx, w, h) {
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const d = imgData.data;
-  for (let i = 0; i < d.length; i += 4) {
-    d[i] = 255 - d[i];
-    d[i+1] = 255 - d[i+1];
-    d[i+2] = 255 - d[i+2];
-  }
-  ctx.putImageData(imgData, 0, 0);
-}
-
 function onBrightnessContrast() {
   ViewerState.brightness_700 = parseInt(document.getElementById('brightness_700').value);
   ViewerState.contrast_700   = parseInt(document.getElementById('contrast_700').value);
@@ -1551,9 +1550,9 @@ function onBrightnessContrast() {
   renderCanvas();
 }
 
-function invertImage() {
-  ViewerState.inverted = !ViewerState.inverted;
-  document.getElementById('btnInvert').classList.toggle('btn-warning', ViewerState.inverted);
+function toggleBw() {
+  ViewerState.bw = !ViewerState.bw;
+  document.getElementById('btnBw').classList.toggle('btn-warning', ViewerState.bw);
   renderCanvas();
 }
 
@@ -1562,13 +1561,21 @@ function resetView() {
   ViewerState.contrast_700 = 0;
   ViewerState.brightness_800 = 0;
   ViewerState.contrast_800 = 0;
-  ViewerState.inverted = false;
+  ViewerState.bw = false;
   for (const id of ['brightness_700','contrast_700','brightness_800','contrast_800']) {
     document.getElementById(id).value = 0;
   }
   document.getElementById('bc700Val').textContent = '0/0';
   document.getElementById('bc800Val').textContent = '0/0';
-  document.getElementById('btnInvert').classList.remove('btn-warning');
+  document.getElementById('btnBw').classList.remove('btn-warning');
+  // Also clear any pending crop
+  ViewerState.crop = null;
+  const cropBtn = document.getElementById('btnCrop');
+  if (cropBtn) cropBtn.classList.remove('btn-warning');
+  const overlay = document.getElementById('cropOverlay');
+  if (overlay) overlay.style.display = 'none';
+  const clearBtn = document.getElementById('btnClearCrop');
+  if (clearBtn) clearBtn.style.display = 'none';
   resetViewTransform();
   renderCanvas();
 }
@@ -1655,18 +1662,28 @@ let cropping = false;
 let cropStart = null;
 
 function startCrop() {
-  // Name kept for compatibility; this tool marks a region for Export,
-  // it does NOT alter the on-screen image. Button label is
-  // "Select export region".
+  // Toggles the crop-mark mode: while ON, mouse drag on the viewer
+  // marks a region; on release, the region is saved to ViewerState.crop
+  // (normalized canvas-relative coords). The next attach export uses
+  // ONLY that region; the on-screen image isn't altered.
   cropping = !cropping;
   const canvas = document.getElementById('imageCanvas');
+  const cropBtn = document.getElementById('btnCrop');
   if (cropping) {
-    showToast('Click and drag to mark the region used by Download PNG / TIFF (zoom/pan disabled)');
+    showToast('Click and drag on the image to mark the export region (zoom/pan disabled)');
     canvas.classList.add('cropping');
+    cropBtn.classList.add('btn-warning');
   } else {
     canvas.classList.remove('cropping');
-    document.getElementById('cropOverlay').style.display = 'none';
+    cropBtn.classList.remove('btn-warning');
   }
+}
+
+function clearCrop() {
+  ViewerState.crop = null;
+  document.getElementById('cropOverlay').style.display = 'none';
+  document.getElementById('btnClearCrop').style.display = 'none';
+  showToast('Crop cleared — exports use the full image again');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1693,12 +1710,41 @@ document.addEventListener('DOMContentLoaded', () => {
     overlay.style.width = Math.abs(x - cropStart.x) + 'px';
     overlay.style.height = Math.abs(y - cropStart.y) + 'px';
   });
-  viewer.addEventListener('mouseup', () => {
+  viewer.addEventListener('mouseup', (e) => {
     if (!cropping || !cropStart) return;
     cropStart = null;
     cropping = false;
     viewer.style.cursor = 'default';
-    showToast('Region marked — it will be used when you Download PNG / TIFF');
+    document.getElementById('btnCrop').classList.remove('btn-warning');
+    const canvas = document.getElementById('imageCanvas');
+    canvas.classList.remove('cropping');
+
+    // Translate the overlay box from viewer-pixels to canvas-relative
+    // normalized [0,1]. The export endpoint multiplies by the rendered
+    // image's actual width/height, so a sensible normalization here is
+    // the canvas's bounding box (ignoring any black margin in the
+    // viewer when fitScale doesn't fill the full container).
+    const overlay = document.getElementById('cropOverlay');
+    const oRect = overlay.getBoundingClientRect();
+    const cRect = canvas.getBoundingClientRect();
+    if (cRect.width === 0 || cRect.height === 0) {
+      overlay.style.display = 'none';
+      return;
+    }
+    const x0 = Math.max(0, Math.min(1, (oRect.left   - cRect.left) / cRect.width));
+    const y0 = Math.max(0, Math.min(1, (oRect.top    - cRect.top)  / cRect.height));
+    const x1 = Math.max(0, Math.min(1, (oRect.right  - cRect.left) / cRect.width));
+    const y1 = Math.max(0, Math.min(1, (oRect.bottom - cRect.top)  / cRect.height));
+    if ((x1 - x0) < 0.02 || (y1 - y0) < 0.02) {
+      // Treat tiny drags as accidental clicks; don't save.
+      overlay.style.display = 'none';
+      ViewerState.crop = null;
+      document.getElementById('btnClearCrop').style.display = 'none';
+      return;
+    }
+    ViewerState.crop = { x0, y0, x1, y1 };
+    document.getElementById('btnClearCrop').style.display = '';
+    showToast('Crop region marked — next PNG/TIFF export uses just this region');
   });
 });
 
@@ -1706,11 +1752,13 @@ document.addEventListener('DOMContentLoaded', () => {
    Live-preview toggle (US5). One handle, cleared on OFF (B1 fix).
 ============================================================================ */
 
-// States during which the JPEG preview endpoint returns useful data
-// (the instrument can render a partial preview at any time during a
-// scan), distinct from the post-scan state where the channel TIFFs
-// exist and the per-channel viewer takes over.
-const LIVE_SCAN_STATES = new Set(['Configured', 'Initializing', 'Scanning', 'Paused']);
+// States during which the JPEG preview endpoint returns useful data.
+// At Configured/Initializing the new scan hasn't laid down any pixels
+// yet — the instrument's preview endpoint hands back the PREVIOUS
+// scan's data, which made the cleared viewer "fill back in with the
+// old image" right after Configure. Only poll once Scanning starts;
+// keep Paused so a paused mid-scan still shows its frozen preview.
+const LIVE_SCAN_STATES = new Set(['Scanning', 'Paused']);
 
 function drawLiveJpeg(bitmap) {
   // Render the instrument's pre-colorized JPEG verbatim into the
@@ -1835,7 +1883,8 @@ async function attachExport(format, includeFooter) {
   data.contrast_700   = ViewerState.contrast_700;
   data.brightness_800 = ViewerState.brightness_800;
   data.contrast_800   = ViewerState.contrast_800;
-  data.inverted       = ViewerState.inverted;
+  data.bw             = ViewerState.bw;
+  data.crop           = ViewerState.crop;
 
   try {
     const resp = await fetch('/api/image/export', {
