@@ -1235,11 +1235,23 @@ async function configureScan() {
   // Clear the previous scan from the viewer the moment we're about
   // to commit to a new one — otherwise the channel buttons keep
   // showing the previous run's bitmaps while the next scan is still
-  // initialising / scanning.
+  // initialising / scanning. Also drops any crop region the user
+  // marked on the previous scan: a stale crop would silently shrink
+  // the next attach export to a window that no longer makes sense
+  // for the new image.
   ChannelCache.clear();
   ViewerState.active_view = null;
+  ViewerState.crop = null;
   resetViewTransform();
   updateViewButtons();
+  const cropBtn = document.getElementById('btnCrop');
+  if (cropBtn) cropBtn.classList.remove('btn-warning');
+  const cropOverlay = document.getElementById('cropOverlay');
+  if (cropOverlay) cropOverlay.style.display = 'none';
+  const clearCropBtn = document.getElementById('btnClearCrop');
+  if (clearCropBtn) clearCropBtn.style.display = 'none';
+  cropping = false;
+  document.getElementById('imageCanvas').classList.remove('cropping');
   renderCanvas();
 
   // Defensive: block any background poller from rendering preview
