@@ -17,11 +17,10 @@
 <title>Odyssey Western Blot Imager</title>
 <style>
   :root {
-    /* Channel + signal colors are theme-independent so band renders don't
-       shift between themes. */
-    --ch700: #ff5a5a;
-    --ch800: #58e07a;
-    --overlay: #c7a6ff;
+    /* Signal colors are theme-independent. ``--ch700`` (red), ``--ch800``
+       (green), and ``--overlay`` (neutral) ARE per-theme — see each
+       theme block below. The on-canvas channel tint reads them at
+       render time so a theme switch immediately re-tints the image. */
     --success: #45c46e;
     --warning: #ffaa33;
     --danger: #e5484d;
@@ -43,6 +42,9 @@
     --border: #c9bfa8;
     --border-soft: #ded5c3;
     --input-bg: #ffffff;
+    --ch700: #c64545;   /* warm crimson */
+    --ch800: #5a9846;   /* warm forest */
+    --overlay: #5a4d3d; /* warm charcoal — neutral */
   }
 
   /* ---- Theme 2: Arctic (cool crisp blue-white) ----
@@ -61,6 +63,9 @@
     --border: #b8c6d8;
     --border-soft: #d5dfec;
     --input-bg: #ffffff;
+    --ch700: #d83a5c;   /* cool magenta-red */
+    --ch800: #2eaa6c;   /* cool teal-green */
+    --overlay: #4a5870; /* slate-blue */
   }
 
   /* ---- Theme 3: Sage (soft white with green accents) ----
@@ -79,6 +84,9 @@
     --border: #bac8bf;
     --border-soft: #d7e0da;
     --input-bg: #ffffff;
+    --ch700: #b94860;   /* rose-red */
+    --ch800: #4f8a52;   /* deep sage */
+    --overlay: #4f5a52; /* sage-tinted gray */
   }
 
   /* ---- Theme 4: Sandstone (warm beige + terracotta) ----
@@ -97,6 +105,9 @@
     --border: #c9bb9f;
     --border-soft: #ded3b9;
     --input-bg: #ffffff;
+    --ch700: #b94e34;   /* terracotta-red */
+    --ch800: #6e8a3a;   /* olive-green */
+    --overlay: #5d4a35; /* warm brown-gray */
   }
 
   /* ---- Theme 5: Navy (the one dark option) ---- */
@@ -113,6 +124,9 @@
     --border: #3a4a72;
     --border-soft: #283a60;
     --input-bg: #1a2540;
+    --ch700: #ff6080;   /* bright pink-red, high contrast on dark */
+    --ch800: #5cd676;   /* bright neon green */
+    --overlay: #c4cfe1; /* light gray — neutral on dark */
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -1527,19 +1541,26 @@ function renderCanvas() {
   cctx.fillStyle = '#000';
   cctx.fillRect(0, 0, compose.width, compose.height);
 
+  // Pull the theme-tuned channel tints fresh so a theme switch
+  // immediately re-paints with the right hue. Falls back to plain
+  // red/green if the CSS var isn't readable for any reason.
+  const _cs = getComputedStyle(document.documentElement);
+  const tint700 = (_cs.getPropertyValue('--ch700') || '').trim() || '#ff4444';
+  const tint800 = (_cs.getPropertyValue('--ch800') || '').trim() || '#44cc44';
+
   if (view === 'overlay') {
     // 700 → red tint, 800 → green tint; 'lighten' composite yields the
     // standard LI-COR dual-channel look. Per-channel B/C is applied
     // BEFORE tinting and BEFORE compositing so the two channels can be
     // balanced independently.
-    drawChannelLayer(cctx, ChannelCache.ch700, '#ff4444',
+    drawChannelLayer(cctx, ChannelCache.ch700, tint700,
                      ViewerState.brightness_700, ViewerState.contrast_700);
     cctx.globalCompositeOperation = 'lighten';
-    drawChannelLayer(cctx, ChannelCache.ch800, '#44cc44',
+    drawChannelLayer(cctx, ChannelCache.ch800, tint800,
                      ViewerState.brightness_800, ViewerState.contrast_800);
     cctx.globalCompositeOperation = 'source-over';
   } else {
-    const tint = view === '700' ? '#ff4444' : '#44cc44';
+    const tint = view === '700' ? tint700 : tint800;
     const b = view === '700' ? ViewerState.brightness_700 : ViewerState.brightness_800;
     const c = view === '700' ? ViewerState.contrast_700   : ViewerState.contrast_800;
     drawChannelLayer(cctx, bitmap, tint, b, c);
