@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odyssey-app-hap"
+version = "0.1.0"
+description = "FastAPI control app for the LI-COR Odyssey Classic at WUR Human and Animal Physiology lab — first deployed reference of the pylabrobot Odyssey driver + DeviceCard provenance pattern."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+  {name = "Vincent de Boer", email = "vincent.deboer@wur.nl"},
+]
+keywords = ["odyssey", "li-cor", "western-blot", "imaging", "fastapi", "pylabrobot", "pidinst", "fair"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+  "Framework :: FastAPI",
+]
+
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "websockets",
+  "Pillow",
+  # PLR + Odyssey driver — pinned to the fork branch until the upstream
+  # PR (vcjdeboer/pylabrobot:odyssey-v1b1) merges into pylabrobot/main.
+  "pylabrobot[odyssey] @ git+https://github.com/vcjdeboer/pylabrobot.git@odyssey-v1b1",
+]
+
+[project.urls]
+Homepage = "https://github.com/vcjdeboer/odyssey-app-hap"
+"Upstream PR" = "https://github.com/PyLabRobot/pylabrobot/pulls?q=author:vcjdeboer"
+"Instrument PIDInst" = "http://hdl.handle.net/21.11157/psf97-zv353"
+
+[tool.setuptools.packages.find]
+include = ["odyssey_app*", "plr_v4*"]

@@ -1,0 +1,37 @@
+# PIDInst registration scripts — operational, not part of the app
+odyssey_app/b2inst_*.py
+
+# User data — written by the running app, not source
+odyssey_app/records/*
+odyssey_app/exports/*
+odyssey_app/scans/*
+!odyssey_app/records/.gitkeep
+!odyssey_app/exports/.gitkeep
+!odyssey_app/scans/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+env/
+venv/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Build / dist
+build/
+dist/
+*.egg
+
+# Lab credentials never in git
+credentials.bat
+.env
