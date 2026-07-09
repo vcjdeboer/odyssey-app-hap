@@ -1596,6 +1596,30 @@ async def get_current_record():
     return JSONResponse(content=_current_record.to_dict())
 
 
+@app.get("/api/record/full")
+async def get_record_full(filename: str):
+    """Return the full JSON of a single saved record by its filename.
+
+    Used by the Reopen button in the sidebar history (TODO #17). The
+    caller sends the exact ``filename`` reported by ``/api/records``;
+    we read it back from ``RECORDS_DIR`` and return the parsed JSON so
+    the frontend can populate the form with all fields.
+
+    Path traversal protection: we resolve the filename against
+    ``RECORDS_DIR`` and reject any target that resolves outside — a
+    ``../`` in the query string can't reach anywhere on disk.
+    """
+    if not filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    target = (RECORDS_DIR / filename).resolve()
+    if not target.is_file() or RECORDS_DIR.resolve() not in target.parents:
+        raise HTTPException(status_code=404, detail="record not found")
+    try:
+        return JSONResponse(content=json.loads(target.read_text()))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"record parse failed: {e}")
+
+
 @app.get("/api/records")
 async def list_records():
     """List recent run records as summaries.

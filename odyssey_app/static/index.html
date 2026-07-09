@@ -665,8 +665,14 @@
             title="Stop the scan and save whatever has been acquired so far">Stop</button>
     <button class="btn btn-secondary" id="btnCancel" onclick="cancelScan()" disabled
             title="Cancel the scan and discard all data">Cancel</button>
+    <button class="btn btn-secondary" id="btnSaveDetails" onclick="saveDetails()"
+            title="Save the current form state as a new record version. Useful during a scan — fill in metadata while the instrument works, then save when you're done. Never overwrites: each save is a new versioned file."
+            style="display:none">Save details</button>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <span class="scan-status-text" id="scanStatusText">Idle</span>
+    <span class="during-scan-hint" id="duringScanHint" style="display:none;font-size:11px;color:var(--text-dim);margin-left:10px">
+      💡 Fill in details while the scan runs — click <b>Save details</b> when done
+    </span>
   </div>
 
   <div class="image-controls">
@@ -936,6 +942,16 @@ function applyScanSession() {
   document.getElementById('btnPause').disabled = !btnStates.pause;
   document.getElementById('btnStop').disabled = !btnStates.stop;
   document.getElementById('btnCancel').disabled = !btnStates.cancel;
+
+  // Show the "Save details" button and hint while a scan is running so
+  // users can fill in metadata during the 5-min wait and save on top of
+  // the existing record file. Multiple saves = multiple versioned files
+  // (write-only guarantee). Hidden in Idle / terminal states.
+  const scanning = (s === 'Scanning' || s === 'Paused' || s === 'Initializing');
+  const btnSaveDetails = document.getElementById('btnSaveDetails');
+  const duringScanHint = document.getElementById('duringScanHint');
+  if (btnSaveDetails) btnSaveDetails.style.display = scanning ? '' : 'none';
+  if (duringScanHint) duringScanHint.style.display = scanning ? '' : 'none';
 
   // Auto-toggle live preview on the scan-state transition. Turn ON
   // when the instrument starts a scan so the user sees the partial
@@ -2068,6 +2084,31 @@ async function attachHyperstack() {
   } catch (e) { showToast('HyperStack attach failed: ' + e.message, true); }
 }
 
+async function saveDetails() {
+  // Save the current form state as a new record version. Intended for
+  // the during-scan flow (fill in metadata during the 5-min scanning
+  // wait, save when done). The backend's _write_no_overwrite() means
+  // each save creates a new timestamped file rather than clobbering
+  // the one written by Start — the history panel picks up the newest.
+  const data = collectRecord();
+  if (!data.scan_name || !data.scan_name.trim()) {
+    showToast('Save details: scan name is required', true);
+    return;
+  }
+  try {
+    const resp = await fetch('/api/record', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.detail || 'HTTP ' + resp.status);
+    showToast(`Saved details → ${body.filename}`);
+    refreshHistory();
+  } catch (e) {
+    showToast('Save details failed: ' + e.message, true);
+  }
+}
+
 /* ============================================================================
    Identity sync — keep the prominent header row and the sidebar fields in
    lock-step. Either one can be edited; both stay the single source of truth.
@@ -2481,13 +2522,103 @@ function renderHistoryItem(r) {
       + '</div>';
 
   const expId = r.experiment_id || '';
+  const filename = r.filename || '';
   return `<div class="history-item${isActive ? ' active' : ''}"
                onclick="loadHistoricalScan('${_esc(r.scan_name)}', '${_esc(group)}', '${_esc(expId)}')">
-    <div class="name">${_esc(r.scan_name || '(unnamed)')}</div>
+    <div class="name">${_esc(r.scan_name || '(unnamed)')}
+      <button class="btn btn-small btn-secondary reopen-btn"
+              title="Reopen this scan's metadata into the form so you can edit or re-export it without re-scanning"
+              onclick="event.stopPropagation(); reopenRecord('${_esc(filename)}')"
+              style="float:right;font-size:10px;padding:1px 6px">Reopen</button>
+    </div>
     <div class="meta">${metaHtml}</div>
     <div class="time">${_esc(time)}${r.operator ? ' · ' + _esc(r.operator) : ''}</div>
     ${attHtml}
   </div>`;
+}
+
+async function reopenRecord(filename) {
+  // Load a previously-saved record back into the form so the user can
+  // edit metadata (add missed antibody info, correct a target) and
+  // re-export without re-scanning. Raw TIFFs stay canonical — only the
+  // presentation-side files change on re-export. (TODO #17.)
+  if (!filename) { showToast('No record file to reopen', true); return; }
+  const formHasContent = (
+    (document.getElementById('scanName')?.value || '').trim() !== '' ||
+    (document.getElementById('p700Target')?.value || '').trim() !== '' ||
+    (document.getElementById('p800Target')?.value || '').trim() !== ''
+  );
+  if (formHasContent && !confirm('Reopen will replace the current form. Continue?')) return;
+
+  try {
+    const resp = await fetch(`/api/record/full?filename=${encodeURIComponent(filename)}`);
+    if (!resp.ok) {
+      const detail = (await resp.json()).detail || `HTTP ${resp.status}`;
+      throw new Error(detail);
+    }
+    const record = await resp.json();
+    populateFormFromRecord(record);
+    // Also load the scan image if the exports are still on disk.
+    const scan = (record.scan_name || '').trim();
+    const grp = record.scan_group || LOCKED_GROUP;
+    const expId = (record.experiment_id || '').trim();
+    if (scan) { loadHistoricalScan(scan, grp, expId); }
+    showToast(`Reopened: ${record.scan_name || '(unnamed)'}`);
+  } catch (e) {
+    showToast('Reopen failed: ' + e.message, true);
+  }
+}
+
+function populateFormFromRecord(r) {
+  // Write every form field from a record JSON. Missing fields fall
+  // back to empty rather than throwing so partially-filled records
+  // still round-trip.
+  const set = (id, val) => { const el = document.getElementById(id);
+                             if (el && val !== undefined && val !== null) el.value = val; };
+
+  set('project',  r.project || '');
+  set('projectHeader', r.project || '');
+  set('scanName', r.scan_name || '');
+  set('scanNameHeader', r.scan_name || '');
+  set('operator', r.operator || '');
+  set('gelType',  r.gel_type || '');
+  set('transferMethod', r.transfer_method || '');
+  const blk = r.blocking || {};
+  set('blockingBuffer',   blk.buffer || '');
+  set('blockingDuration', blk.duration || '');
+
+  const prims = r.primary_antibodies || [];
+  const p700 = prims.find(a => a.channel === 700) || {};
+  const p800 = prims.find(a => a.channel === 800) || {};
+  for (const [prefix, a] of [['p700', p700], ['p800', p800]]) {
+    set(prefix + 'Target',      a.target || '');
+    set(prefix + 'Host',        a.host || '');
+    set(prefix + 'Clonality',   a.clonality || '');
+    set(prefix + 'HapId',       a.hap_id || '');
+    set(prefix + 'Vendor',      a.vendor || '');
+    set(prefix + 'Catalog',     a.catalog || '');
+    set(prefix + 'Lot',         a.lot || '');
+    set(prefix + 'Rrid',        a.rrid || '');
+    set(prefix + 'Dilution',    a.dilution || '');
+    set(prefix + 'Incubation',  a.incubation || '');
+  }
+
+  const secs = r.secondary_antibodies || [];
+  const s700 = secs.find(a => a.channel === 700) || {};
+  const s800 = secs.find(a => a.channel === 800) || {};
+  set('s700Dye',      s700.dye || '');
+  set('s700Dilution', s700.dilution || '');
+  set('s800Dye',      s800.dye || '');
+  set('s800Dilution', s800.dilution || '');
+
+  set('notes', r.notes || '');
+
+  // Rebuild the lanes table from the record's samples list.
+  const laneBody = document.getElementById('laneBody');
+  if (laneBody) {
+    laneBody.innerHTML = '';
+    (r.samples || []).forEach(s => addLane(s.name || '', s.treatment || '', s.ug || ''));
+  }
 }
 
 async function loadHistoricalScan(scanName, group, experimentId) {

@@ -23,6 +23,9 @@ class Antibody:
     target: str = ""              # "beta-actin", "phospho-ERK"
     host: str = ""                # "rabbit", "mouse"
     clonality: str = ""           # "monoclonal", "polyclonal"
+    hap_id: str = ""              # "HAP-0421" (internal HAP database ID,
+                                  # canonical identifier — resolves to
+                                  # vendor+catalog+lot automatically)
     vendor: str = ""              # "Cell Signaling Technology"
     catalog: str = ""             # "#4970"
     lot: str = ""                 # "GR3456789-1"
