@@ -387,6 +387,26 @@
     color: var(--text-dim); border-top: 1px solid var(--border-soft);
   }
   .reopen-btn { float: right; font-size: 10px; padding: 1px 6px; }
+
+  /* Prior-scans compact list (2026-07-09): dense one-liner rows so a
+     full lab week fits in the sidebar. Reserved for scans NOT in the
+     current session — current work still uses the .history-item card. */
+  .prior-list { display: flex; flex-direction: column; gap: 2px; }
+  .prior-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 6px; border-radius: 3px;
+    font-size: 12px; line-height: 1.4;
+    border-bottom: 1px dotted var(--border-soft);
+  }
+  .prior-row:hover { background: var(--input-bg); }
+  .prior-main { flex: 1; display: flex; gap: 8px; align-items: baseline;
+                overflow: hidden; text-overflow: ellipsis; }
+  .prior-name     { font-weight: 600; color: var(--text); }
+  .prior-project  { color: var(--accent2); font-size: 11px; }
+  .prior-operator { color: var(--ch700); font-weight: 600; font-size: 11px;
+                    padding: 0 5px; border: 1px solid var(--ch700); border-radius: 3px; }
+  .prior-date     { color: var(--text-dim); font-size: 11px; margin-left: auto; }
+  .prior-row .reopen-btn { float: none; }
   .history-item {
     background: var(--input-bg); border: 1px solid var(--border-soft);
     border-left: 3px solid var(--accent2);
@@ -2567,8 +2587,10 @@ async function refreshHistory() {
       html += mine.map(renderHistoryItem).join('');
     }
     if (others.length > 0) {
-      html += '<div class="history-divider">Prior scans (reopen to edit metadata / re-export)</div>';
-      html += others.slice(0, 20).map(r => renderHistoryItem(r, /*isActive*/ false)).join('');
+      html += '<div class="history-divider">Prior scans (reopen to edit / re-export)</div>';
+      html += '<div class="prior-list">'
+            + others.slice(0, 40).map(renderPriorScanRow).join('')
+            + '</div>';
     }
     listEl.innerHTML = html;
   } catch (e) {
@@ -2615,6 +2637,36 @@ async function exportExperiment() {
 
 function _qsParam(k, v) {
   return `${encodeURIComponent(k)}=${encodeURIComponent(v ?? '')}`;
+}
+
+function _fmtDate(ts) {
+  // Timestamps in records are ISO strings from datetime.now().isoformat().
+  // Trim to YYYY-MM-DD HH:mm for the compact list.
+  if (!ts) return '';
+  return String(ts).slice(0, 16).replace('T', ' ');
+}
+
+function renderPriorScanRow(r) {
+  // Compact one-liner for prior-session scans: date, scan name, project,
+  // operator, and a Reopen button. Meant for the sidebar list; the
+  // card-style renderHistoryItem() is reserved for current-session scans
+  // where the user is actively working.
+  const scanName = r.scan_name || '(unnamed)';
+  const project  = r.project || '';
+  const operator = r.operator || '';
+  const date     = _fmtDate(r.timestamp);
+  const filename = r.filename || '';
+  return `<div class="prior-row">
+    <div class="prior-main">
+      <span class="prior-name">${_esc(scanName)}</span>
+      ${project  ? `<span class="prior-project">${_esc(project)}</span>`   : ''}
+      ${operator ? `<span class="prior-operator">${_esc(operator)}</span>` : ''}
+      ${date     ? `<span class="prior-date">${_esc(date)}</span>`         : ''}
+    </div>
+    <button class="btn btn-small btn-secondary reopen-btn"
+            title="Reopen this scan's metadata into the form so you can edit or re-export it"
+            onclick="reopenRecord('${_esc(filename)}')">Reopen</button>
+  </div>`;
 }
 
 function renderHistoryItem(r) {
