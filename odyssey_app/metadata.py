@@ -114,6 +114,15 @@ class WesternBlotRecord:
     protocol_ref: str = ""            # DOI or local protocol ID
     notes: str = ""
 
+    # -- lifecycle --
+    # "draft"  = scan is in progress or metadata still being edited.
+    #            Save operations overwrite the same file in place.
+    # "locked" = scan is complete AND user has confirmed the metadata.
+    #            No more overwrites; subsequent saves create versioned
+    #            files (_2, _3, …). Auto-attaches all three TIFF
+    #            variants with the final metadata stamped in.
+    status: str = "draft"
+
     # -- display (saved separately from raw data) --
     display_settings: dict = field(default_factory=dict)
 
@@ -137,6 +146,7 @@ class WesternBlotRecord:
             "software_version", "scan_name", "scan_group", "scan_timestamp",
             "scan_duration_s", "membrane_type", "gel_type", "transfer_method",
             "operator", "project", "experiment_id", "protocol_ref", "notes",
+            "status",
         ):
             if key in data:
                 setattr(record, key, data[key])

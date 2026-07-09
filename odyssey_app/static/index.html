@@ -1432,6 +1432,111 @@ async function onScanComplete(msg) {
   if (ChannelCache.ch700) setActiveView('700');
   else if (ChannelCache.ch800) setActiveView('800');
   else showToast('No channels produced (partial stop with no data?)', true);
+
+  // Post-scan checkpoint (TODO #11): open the completion dialog so the
+  // user can review missing metadata, then lock the record and auto-
+  // attach all three TIFF variants. Runs only for a normal complete —
+  // Stopped/Failed skip the checkpoint.
+  if (outcome === 'completed') {
+    openCompletionCheckpoint(msg.scan);
+  }
+}
+
+function openCompletionCheckpoint(scanName) {
+  // Build a list of missing recommended fields based on the current form.
+  // Nothing here is REQUIRED (the user can lock a record with everything
+  // blank if they want) — this is a "did you mean to leave these empty?"
+  // reminder before the record is frozen.
+  const missing = [];
+  const g = (id) => (document.getElementById(id)?.value || '').trim();
+  if (!g('operator'))    missing.push({field: 'Operator',                 focusId: 'operator'});
+  if (!g('p700Target'))  missing.push({field: 'Primary antibody 700 target', focusId: 'p700Target'});
+  if (!g('p800Target'))  missing.push({field: 'Primary antibody 800 target', focusId: 'p800Target'});
+  if (!g('gelType'))     missing.push({field: 'Gel type',                    focusId: 'gelType'});
+
+  const missingHtml = missing.length === 0
+    ? '<div style="color:var(--success);padding:6px 0">All recommended fields are filled — ready to lock.</div>'
+    : '<ul style="margin:6px 0;padding-left:20px">'
+      + missing.map(m => `<li>${_esc(m.field)}</li>`).join('')
+      + '</ul>';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-backdrop show';
+  modal.id = 'checkpointModal';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:520px;padding:20px 24px">
+      <h3 style="margin-top:0">Scan complete — lock in the record</h3>
+      <p style="margin:6px 0">Scan <b>${_esc(scanName)}</b> finished.
+      Before we lock the record and export the TIFFs, you may want to fill in:</p>
+      ${missingHtml}
+      <p style="font-size:12px;color:var(--text-dim);margin-top:8px">
+        Locking freezes this record and auto-exports <b>Normal TIFF</b> (2×
+        raw 16-bit), <b>ImageJ HyperStack</b>, and <b>Presentation TIFF</b>
+        to your operator data folder. The raw pixels are already safe on
+        the scanner — this just stamps the final metadata into the files.
+      </p>
+      <div style="text-align:right;margin-top:12px">
+        ${missing.length > 0
+          ? `<button class="btn btn-secondary" onclick="checkpointFillNow(${JSON.stringify(missing[0].focusId)})">Fill in first missing field</button>`
+          : ''}
+        <button class="btn btn-secondary" onclick="closeCheckpointModal()">Later (keep draft)</button>
+        <button class="btn btn-primary" onclick="checkpointLockAndAttach(${JSON.stringify(scanName)})">Lock and export</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function closeCheckpointModal() {
+  const m = document.getElementById('checkpointModal');
+  if (m) m.remove();
+}
+
+function checkpointFillNow(focusId) {
+  closeCheckpointModal();
+  const el = document.getElementById(focusId);
+  if (el) { el.scrollIntoView({behavior: 'smooth', block: 'center'}); el.focus(); }
+  showToast('Fill in the missing details, then click Save details → Lock later');
+}
+
+async function checkpointLockAndAttach(scanName) {
+  const expId = (document.getElementById('experimentId')?.value || '').trim();
+  if (!expId) { showToast('No experiment ID — cannot lock', true); return; }
+
+  // Save the current form state one last time as a draft, so the lock
+  // step finds the latest data. Then call the lock endpoint.
+  await saveDetails();
+
+  const payload = {
+    experiment_id: expId,
+    scan_name: scanName,
+    format: 'tiff',
+    view: 'overlay',
+    brightness_700: ViewerState.brightness_700,
+    contrast_700:   ViewerState.contrast_700,
+    brightness_800: ViewerState.brightness_800,
+    contrast_800:   ViewerState.contrast_800,
+    bw:             ViewerState.bw,
+    invert:         ViewerState.invert,
+  };
+
+  try {
+    const resp = await fetch('/api/record/lock', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.detail || 'HTTP ' + resp.status);
+    const parts = Object.entries(body.attached || {}).map(([k, v]) => {
+      if (v && v.error) return `${k}: ✗ ${v.error}`;
+      const name = (v && v.filename) || (v && v.files && v.files.map(f => f.filename).join('/')) || 'ok';
+      return `${k}: ${name}`;
+    });
+    closeCheckpointModal();
+    showToast(`Locked. Attached: ${parts.join(' · ')}`);
+    refreshHistory();
+  } catch (e) {
+    showToast('Lock failed: ' + e.message, true);
+  }
 }
 
 async function populateChannelCache(env) {
@@ -2172,6 +2277,11 @@ function collectRecord() {
     });
   });
   return {
+    // Default status is draft; the completion checkpoint flips to
+    // locked via /api/record/lock. Saves initiated by Start / Save
+    // details both send draft — the backend overwrites in-place while
+    // draft, and switches to versioned writes once locked.
+    status: 'draft',
     operator: document.getElementById('operator').value,
     project: document.getElementById('project').value,
     experiment_id: document.getElementById('experimentId').value,

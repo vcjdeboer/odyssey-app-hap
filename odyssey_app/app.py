@@ -272,6 +272,27 @@ def _find_record(experiment_id: str, scan_name: str) -> Optional[dict]:
     return None
 
 
+def _find_draft_record_path(experiment_id: str, scan_name: str) -> Optional[Path]:
+    """Find the file path of the current DRAFT record for (experiment_id, scan_name).
+
+    Used by save_record to overwrite an in-progress draft in place rather
+    than creating a versioned copy on every keystroke-driven save. Returns
+    None if no draft exists yet (first save creates one).
+    """
+    if not (experiment_id and scan_name):
+        return None
+    for f in sorted(RECORDS_DIR.glob("*.json"), reverse=True):
+        try:
+            d = json.loads(f.read_text())
+        except Exception:
+            continue
+        if (d.get("experiment_id") == experiment_id
+                and d.get("scan_name") == scan_name
+                and d.get("status", "draft") == "draft"):
+            return f
+    return None
+
+
 def _build_session_ctx(
     record: Optional[dict], experiment_id: str, scan_name: str
 ) -> dict:
@@ -1558,14 +1579,35 @@ async def save_record(data: dict):
         safe_name = record.scan_name or "scan"
         safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in safe_name)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{safe_name}.json"
-        filepath = RECORDS_DIR / filename
-        # Primary write — never overwrite, keep app history intact.
-        actual_primary = _write_no_overwrite(filepath, record.to_json().encode("utf-8"))
+
+        # Draft records overwrite the same file for the same
+        # (experiment_id, scan_name) — the scaffold-in-progress case
+        # where the user is filling in metadata during the scan. Only
+        # once the user locks the record does the write-only guarantee
+        # kick in and subsequent saves create versioned files.
+        record_bytes = record.to_json().encode("utf-8")
+        if (record.status == "draft"
+                and record.experiment_id and record.scan_name):
+            existing = _find_draft_record_path(
+                record.experiment_id, record.scan_name,
+            )
+            if existing is not None:
+                existing.write_bytes(record_bytes)
+                actual_primary = existing
+            else:
+                filename = f"{timestamp}_{safe_name}.json"
+                actual_primary = _write_no_overwrite(
+                    RECORDS_DIR / filename, record_bytes,
+                )
+        else:
+            filename = f"{timestamp}_{safe_name}.json"
+            actual_primary = _write_no_overwrite(
+                RECORDS_DIR / filename, record_bytes,
+            )
 
         # Mirror to the operator's data folder ("copy on write" per user
-        # request 2026-07-09). Skipped silently if we can't figure out
-        # operator or experiment_id.
+        # request 2026-07-09). Draft mirrors overwrite in place too; only
+        # locked records go through the write-only versioning path.
         mirror_filename = None
         try:
             operator = getattr(record, "operator", "") or ""
@@ -1573,15 +1615,18 @@ async def save_record(data: dict):
             if experiment_id:
                 mirror_dir = _operator_export_dir(operator, experiment_id)
                 mirror_target = mirror_dir / f"record__{safe_name}.json"
-                actual_mirror = _write_no_overwrite(
-                    mirror_target, record.to_json().encode("utf-8"),
-                )
+                if record.status == "draft" and mirror_target.exists():
+                    mirror_target.write_bytes(record_bytes)
+                    actual_mirror = mirror_target
+                else:
+                    actual_mirror = _write_no_overwrite(mirror_target, record_bytes)
                 mirror_filename = str(actual_mirror)
         except Exception as e:
             logging.info("Record mirror write skipped: %s", e)
 
         return {
             "status": "ok",
+            "record_status": record.status,
             "filename": actual_primary.name,
             "mirror": mirror_filename,
         }
@@ -1594,6 +1639,103 @@ async def get_current_record():
     if _current_record is None:
         return JSONResponse(content=WesternBlotRecord().to_dict())
     return JSONResponse(content=_current_record.to_dict())
+
+
+@app.post("/api/record/lock")
+async def lock_record(data: dict):
+    """Finalize the draft record for (experiment_id, scan_name) → status=locked,
+    then auto-attach all three TIFF variants with the final metadata.
+
+    This is the post-scan checkpoint (TODO #11): once the user has filled
+    in any missing details, we (a) flip the draft to locked so no more
+    overwrites can happen, and (b) stamp the final metadata into the
+    exported TIFF files. Called by the frontend completion dialog on
+    scan_complete.
+
+    Auto-attach step is best-effort — partial failures are reported per
+    variant, and the lock still succeeds. Rationale: the raw data on the
+    scanner is safe regardless; export is a convenience.
+    """
+    experiment_id = (data.get("experiment_id") or "").strip()
+    scan_name = (data.get("scan_name") or "").strip()
+    if not experiment_id or not scan_name:
+        raise HTTPException(
+            status_code=400,
+            detail="experiment_id and scan_name required",
+        )
+
+    # Find the draft, flip it, write versioned copy (not in-place).
+    draft_path = _find_draft_record_path(experiment_id, scan_name)
+    if draft_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No draft record found for scan '{scan_name}' in experiment '{experiment_id}'",
+        )
+    try:
+        draft = json.loads(draft_path.read_text())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"draft parse failed: {e}")
+    draft["status"] = "locked"
+
+    # Write a NEW versioned file for the locked copy. Preserving the
+    # draft on disk gives us an audit trail of "here's what was in the
+    # scaffold at lock time" alongside the locked version.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in scan_name)
+    locked_path = _write_no_overwrite(
+        RECORDS_DIR / f"{timestamp}_{safe_name}__locked.json",
+        json.dumps(draft, indent=2).encode("utf-8"),
+    )
+
+    # Also write to the operator folder so the analyst sees both.
+    operator = draft.get("operator", "") or ""
+    if experiment_id:
+        try:
+            mirror_target = _operator_export_dir(operator, experiment_id) / f"record__{safe_name}__locked.json"
+            _write_no_overwrite(mirror_target, json.dumps(draft, indent=2).encode("utf-8"))
+        except Exception as e:
+            logging.info("Locked-record mirror skipped: %s", e)
+
+    # Auto-attach the three TIFF variants. Best-effort — collect results
+    # and errors so the user sees exactly what landed.
+    attached: dict[str, dict] = {}
+
+    async def _try(name: str, coro):
+        try:
+            attached[name] = await coro
+        except HTTPException as e:
+            attached[name] = {"error": e.detail, "status_code": e.status_code}
+        except Exception as e:
+            attached[name] = {"error": f"{type(e).__name__}: {e}"}
+
+    attach_payload = {"experiment_id": experiment_id, "scan_name": scan_name}
+
+    # Raw both (safe even in sim: falls back to 404, we record the error).
+    await _try("raw_both", attach_raw_both(attach_payload))
+    await _try("hyperstack", attach_hyperstack(attach_payload))
+    # Presentation: use the current display state on the frontend, or
+    # a neutral default when called server-side. Falls back to view=700.
+    presentation_payload = {
+        **attach_payload,
+        "format": data.get("format", "tiff"),
+        "view": data.get("view", "overlay"),
+        "include_footer": True,
+        "brightness_700": data.get("brightness_700", 0),
+        "contrast_700": data.get("contrast_700", 0),
+        "brightness_800": data.get("brightness_800", 0),
+        "contrast_800": data.get("contrast_800", 0),
+        "bw": data.get("bw", False),
+        "invert": data.get("invert", False),
+        "operator": operator,
+    }
+    await _try("presentation", export_image(presentation_payload))
+
+    return {
+        "status": "locked",
+        "record_locked_path": str(locked_path),
+        "record_draft_path": str(draft_path),
+        "attached": attached,
+    }
 
 
 @app.get("/api/record/full")
