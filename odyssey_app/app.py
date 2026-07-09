@@ -85,10 +85,115 @@ app = FastAPI(title="Odyssey Western Blot Imager")
 STATIC_DIR = Path(__file__).parent / "static"
 RECORDS_DIR = Path(__file__).parent / "records"
 SCANS_DIR = Path(__file__).parent / "scans"
-EXPORTS_DIR = Path(__file__).parent / "exports"  # per-experiment attachments
+# Legacy EXPORTS_DIR is the pre-2026-07-09 flat exports folder. New writes
+# go to _operator_export_dir() (year + operator organized under DATA_ROOT).
+# EXPORTS_DIR is still read for the history/ZIP paths so scans exported
+# before the routing change remain discoverable.
+EXPORTS_DIR = Path(__file__).parent / "exports"
 RECORDS_DIR.mkdir(exist_ok=True)
 SCANS_DIR.mkdir(exist_ok=True)
 EXPORTS_DIR.mkdir(exist_ok=True)
+
+# --------------------------------------------------------------------------
+# Data root routing (TODO #5, shipped 2026-07-09)
+#
+# All new export writes land under DATA_ROOT / <year> / <operator> /
+# <experiment_id> / <files>. Year comes from datetime.now().year at
+# write time so the roll-over from 2026 to 2027 happens automatically —
+# a scan written on New Year's Eve lands in 2026/, one written on
+# New Year's Day lands in 2027/.
+#
+# WRITE-ONLY GUARANTEES enforced by _write_no_overwrite():
+#   - Never overwrites: existing files get a `_2`, `_3`, ... suffix
+#   - Never deletes: this codebase must NOT introduce any os.remove,
+#     shutil.rmtree, .unlink(), etc. under DATA_ROOT. Users' data is
+#     append-only. Cleanup is a human decision, not an app one.
+# --------------------------------------------------------------------------
+DATA_ROOT_ENV = "ODYSSEY_DATA_ROOT"
+DATA_ROOT_WINDOWS_DEFAULT = Path(r"C:\Data")
+DATA_ROOT_UNIX_DEFAULT = Path.home() / "OdysseyData"  # dev / Mac fallback
+
+
+def _data_root() -> Path:
+    """Return the base directory for lab data.
+
+    Priority: env var ``ODYSSEY_DATA_ROOT`` > platform default.
+    On Windows: ``C:\\Data``. On Unix (Mac / Linux dev boxes):
+    ``~/OdysseyData``. In every case ``mkdir(parents=True, exist_ok=True)``
+    happens on first use — the tree grows as scans land.
+    """
+    override = (os.environ.get(DATA_ROOT_ENV) or "").strip()
+    if override:
+        return Path(override)
+    return DATA_ROOT_WINDOWS_DEFAULT if os.name == "nt" else DATA_ROOT_UNIX_DEFAULT
+
+
+def _operator_folder(operator: str) -> str:
+    """Resolve the operator string to a safe folder segment.
+
+    Empty operator → "unassigned" so a scan is still saved but flagged
+    for the operator to reclaim. Never returns "" (would collapse to
+    the parent directory).
+    """
+    return _safe(operator, fallback="unassigned")
+
+
+def _operator_export_dir(operator: str, experiment_id: str) -> Path:
+    """Compute (and create) the target folder for a given operator + experiment.
+
+    Layout: ``<DATA_ROOT>/<YYYY>/<operator>/<experiment_id>/``
+    Year auto-rolls (``datetime.now().year`` at call time). Operator
+    goes through ``_safe()`` so unusual characters become underscores.
+    """
+    year = str(datetime.now().year)
+    op_dir = _data_root() / year / _operator_folder(operator) / _safe(experiment_id)
+    op_dir.mkdir(parents=True, exist_ok=True)
+    return op_dir
+
+
+def _write_no_overwrite(target: Path, blob: bytes) -> Path:
+    """Write bytes to ``target`` without ever overwriting an existing file.
+
+    If ``target`` exists, appends ``_2``, ``_3``, ... to the stem until
+    a free path is found, then writes. Returns the actual path written.
+    Never deletes — enforcement of the "write-only, never delete"
+    guarantee documented at the top of the data-root section.
+    """
+    if not target.exists():
+        target.write_bytes(blob)
+        return target
+    stem, ext = target.stem, target.suffix
+    counter = 2
+    while True:
+        candidate = target.with_name(f"{stem}_{counter}{ext}")
+        if not candidate.exists():
+            candidate.write_bytes(blob)
+            return candidate
+        counter += 1
+
+
+def _find_export_dir_for_history(experiment_id: str) -> Optional[Path]:
+    """Locate the most recent export folder for a given experiment across
+    the new routed tree AND the legacy EXPORTS_DIR flat layout.
+
+    Used by history / attachment listing and the experiment ZIP. Search
+    order: legacy EXPORTS_DIR first (so pre-migration scans still show
+    up), then the routed tree keyed by operator+year.
+    """
+    if not experiment_id:
+        return None
+    legacy = EXPORTS_DIR / _safe(experiment_id)
+    if legacy.exists():
+        return legacy
+    # Fallback: walk the routed tree for a matching experiment_id folder.
+    root = _data_root()
+    if not root.exists():
+        return None
+    matches = list(root.glob(f"*/*/{_safe(experiment_id)}"))
+    if matches:
+        # Pick the most recently modified match.
+        return max(matches, key=lambda p: p.stat().st_mtime)
+    return None
 
 
 def _safe(s: str, fallback: str = "x") -> str:
@@ -196,14 +301,23 @@ def _identity_description(scan_name: str = "", channel: Optional[int] = None) ->
 
 
 def _list_attachments(experiment_id: str, scan_name: str) -> list[str]:
-    """List attachment filenames for a given (experiment_id, scan_name)."""
+    """List attachment filenames for a given (experiment_id, scan_name).
+
+    Searches the routed tree (new) first, then legacy EXPORTS_DIR (old
+    flat layout) so scans exported before 2026-07-09 still show badges
+    in the history panel.
+    """
     if not experiment_id or not scan_name:
         return []
-    exp_dir = EXPORTS_DIR / _safe(experiment_id)
-    if not exp_dir.exists():
-        return []
-    prefix = _safe(scan_name) + "__"
-    return sorted(f.name for f in exp_dir.glob(f"{prefix}*"))
+    prefix_double = _safe(scan_name) + "__"  # presentation exports
+    prefix_dash = _safe(scan_name) + "-"     # raw / hyperstack exports
+    names: set[str] = set()
+    exp_dir = _find_export_dir_for_history(experiment_id)
+    if exp_dir and exp_dir.exists():
+        names.update(f.name for f in exp_dir.iterdir()
+                     if f.is_file() and (f.name.startswith(prefix_double)
+                                         or f.name.startswith(prefix_dash)))
+    return sorted(names)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -976,10 +1090,10 @@ async def attach_raw_both(data: dict):
     record = _find_record(experiment_id, scan_name)
     scan_params = _build_scan_params(record)
     session = _build_session_ctx(record, experiment_id, scan_name)
+    operator = (record or {}).get("operator", "") if record else ""
 
     instrument_scan = _resolve_instrument_scan(scan_name, experiment_id)
-    exp_dir = EXPORTS_DIR / _safe(experiment_id)
-    exp_dir.mkdir(parents=True, exist_ok=True)
+    exp_dir = _operator_export_dir(operator, experiment_id)
 
     written: list[dict] = []
     for channel in (700, 800):
@@ -996,14 +1110,11 @@ async def attach_raw_both(data: dict):
             transforms=None,  # raw pixels, no display-time transforms
         )
         target = exp_dir / f"{_safe(scan_name)}-{channel}-raw.tif"
-        counter = 2
-        while target.exists():
-            target = exp_dir / f"{_safe(scan_name)}-{channel}-raw_{counter}.tif"
-            counter += 1
-        target.write_bytes(tagged)
+        actual = _write_no_overwrite(target, tagged)
         written.append({
             "channel": channel,
-            "filename": target.name,
+            "filename": actual.name,
+            "path": str(actual),
             "bytes": len(tagged),
         })
 
@@ -1075,6 +1186,7 @@ async def attach_hyperstack(data: dict):
         )
 
     record = _find_record(experiment_id, scan_name)
+    operator = (record or {}).get("operator", "") if record else ""
     hyperstack_bytes = write_hyperstack(
         channels[700], channels[800], _DEVICE_CARD,
         scan_name=scan_name,
@@ -1083,14 +1195,10 @@ async def attach_hyperstack(data: dict):
         software_tag=SOFTWARE_TAG,
     )
 
-    exp_dir = EXPORTS_DIR / _safe(experiment_id)
-    exp_dir.mkdir(parents=True, exist_ok=True)
+    exp_dir = _operator_export_dir(operator, experiment_id)
     target = exp_dir / f"{_safe(scan_name)}-hyperstack.tif"
-    counter = 2
-    while target.exists():
-        target = exp_dir / f"{_safe(scan_name)}-hyperstack_{counter}.tif"
-        counter += 1
-    target.write_bytes(hyperstack_bytes)
+    actual = _write_no_overwrite(target, hyperstack_bytes)
+    target = actual  # keep the variable name for the response below
 
     return {
         "status": "attached",
@@ -1098,6 +1206,7 @@ async def attach_hyperstack(data: dict):
         "scan_name": scan_name,
         "variant": "hyperstack",
         "filename": target.name,
+        "path": str(target),
         "bytes": len(hyperstack_bytes),
     }
 
@@ -1361,22 +1470,25 @@ async def export_image(data: dict):
         variant_parts.append("png-clean")
     variant = _safe("-".join(variant_parts))
 
-    exp_dir = EXPORTS_DIR / _safe(experiment_id)
-    exp_dir.mkdir(parents=True, exist_ok=True)
+    # Route to DATA_ROOT/<year>/<operator>/<experiment_id>/ (TODO #5).
+    # Fall back to metadata.get("operator") when the record isn't found —
+    # the export payload carries the same operator string the form has.
+    operator = ""
+    if record_for_meta:
+        operator = record_for_meta.get("operator", "") or ""
+    if not operator:
+        operator = (metadata.get("operator") or "").strip()
+
+    exp_dir = _operator_export_dir(operator, experiment_id)
     base = _safe(scan_name) + "__" + variant
-    target = exp_dir / f"{base}.{ext}"
-    # If the same (scan, variant) was exported earlier, disambiguate.
-    counter = 2
-    while target.exists():
-        target = exp_dir / f"{base}_{counter}.{ext}"
-        counter += 1
-    target.write_bytes(blob)
+    target = _write_no_overwrite(exp_dir / f"{base}.{ext}", blob)
 
     return {
         "status": "attached",
         "experiment_id": experiment_id,
         "scan_name": scan_name,
         "filename": target.name,
+        "path": str(target),
         "variant": variant,
         "bytes": len(blob),
     }
@@ -1667,16 +1779,23 @@ async def _export_records_matching(
                         )
 
             # Bundle any per-scan attachments (PNG/TIFF exports the user
-            # has attached via /api/image/export).
+            # has attached via /api/image/export | raw-both | hyperstack).
+            # Locates the export folder in the routed tree first, falling
+            # back to the legacy EXPORTS_DIR flat layout for pre-2026-07-09
+            # scans.
             exp_id_for_scan = d.get("experiment_id", "")
-            exp_dir = EXPORTS_DIR / _safe(exp_id_for_scan) if exp_id_for_scan else None
+            exp_dir = _find_export_dir_for_history(exp_id_for_scan) if exp_id_for_scan else None
             if exp_dir and exp_dir.exists():
-                prefix = _safe(scan_name) + "__"
-                for att in sorted(exp_dir.glob(f"{prefix}*")):
-                    z.writestr(
-                        f"{root}/exports/{att.name}",
-                        att.read_bytes(),
-                    )
+                prefix_double = _safe(scan_name) + "__"
+                prefix_dash = _safe(scan_name) + "-"
+                for att in sorted(exp_dir.iterdir()):
+                    if not att.is_file():
+                        continue
+                    if att.name.startswith(prefix_double) or att.name.startswith(prefix_dash):
+                        z.writestr(
+                            f"{root}/exports/{att.name}",
+                            att.read_bytes(),
+                        )
 
     buf.seek(0)
     filename = f"{safe}_{export_ts}.zip"
