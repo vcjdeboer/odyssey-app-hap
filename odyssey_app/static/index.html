@@ -380,6 +380,13 @@
     font-size: 12px; color: var(--text-muted); font-style: italic;
     padding: 8px 4px;
   }
+  .history-divider {
+    margin-top: 12px; padding: 4px 6px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim); border-top: 1px solid var(--border-soft);
+  }
+  .reopen-btn { float: right; font-size: 10px; padding: 1px 6px; }
   .history-item {
     background: var(--input-bg); border: 1px solid var(--border-soft);
     border-left: 3px solid var(--accent2);
@@ -2440,11 +2447,20 @@ async function refreshHistory() {
     );
     countEl.textContent = String(mine.length);
     if (exportBtn) exportBtn.disabled = mine.length === 0;
+    // Prior-session records — surface them so the user can Reopen
+    // even when this session is empty (TODO #17 discoverability fix).
+    const others = recs.filter(r => (r.experiment_id || '').trim() !== expId);
+    let html = '';
     if (mine.length === 0) {
-      listEl.innerHTML = '<div class="history-empty">No scans in this experiment yet.</div>';
-      return;
+      html += '<div class="history-empty">No scans in this experiment yet.</div>';
+    } else {
+      html += mine.map(renderHistoryItem).join('');
     }
-    listEl.innerHTML = mine.map(renderHistoryItem).join('');
+    if (others.length > 0) {
+      html += '<div class="history-divider">Prior scans (reopen to edit metadata / re-export)</div>';
+      html += others.slice(0, 20).map(r => renderHistoryItem(r, /*isActive*/ false)).join('');
+    }
+    listEl.innerHTML = html;
   } catch (e) {
     listEl.innerHTML = `<div class="history-empty">Could not load history: ${_esc(e.message)}</div>`;
     countEl.textContent = '0';
@@ -2528,8 +2544,7 @@ function renderHistoryItem(r) {
     <div class="name">${_esc(r.scan_name || '(unnamed)')}
       <button class="btn btn-small btn-secondary reopen-btn"
               title="Reopen this scan's metadata into the form so you can edit or re-export it without re-scanning"
-              onclick="event.stopPropagation(); reopenRecord('${_esc(filename)}')"
-              style="float:right;font-size:10px;padding:1px 6px">Reopen</button>
+              onclick="event.stopPropagation(); reopenRecord('${_esc(filename)}')">Reopen</button>
     </div>
     <div class="meta">${metaHtml}</div>
     <div class="time">${_esc(time)}${r.operator ? ' · ' + _esc(r.operator) : ''}</div>
