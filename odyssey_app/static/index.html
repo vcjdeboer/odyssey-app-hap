@@ -528,9 +528,9 @@
   <div class="section">
     <div class="section-title">Experiment</div>
     <div class="form-row">
-      <div class="field"><label>Project</label><input type="text" id="project" placeholder="VB20260424"
+      <div class="field"><label>Project</label><input type="text" id="project" placeholder="e.g. VB20260709"
              oninput="syncIdentity('project')"></div>
-      <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="western_01"
+      <div class="field"><label>Scan name</label><input type="text" id="scanName" placeholder="e.g. VB260709 (initials+YYMMDD)"
              oninput="syncIdentity('scanName')" required></div>
     </div>
     <div class="form-row">
@@ -538,7 +538,7 @@
         <span class="locked-field" id="experimentIdLabel">—</span>
         <input type="hidden" id="experimentId" value="">
       </div>
-      <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="Name"></div>
+      <div class="field"><label>Operator</label><input type="text" id="operator" placeholder="e.g. VB (initials)" maxlength="6"></div>
     </div>
   </div>
 
@@ -548,13 +548,13 @@
     <div class="form-row triple">
       <div class="field"><label>Membrane</label>
         <select id="membraneType"><option value="">--</option><option value="nitrocellulose">Nitrocellulose</option><option value="PVDF">PVDF</option></select></div>
-      <div class="field"><label>Gel</label><input type="text" id="gelType" placeholder="4-12% Bis-Tris"></div>
+      <div class="field"><label>Gel</label><input type="text" id="gelType" placeholder="e.g. 4-12% Bis-Tris"></div>
       <div class="field"><label>Transfer</label>
         <select id="transferMethod"><option value="">--</option><option value="wet">Wet</option><option value="semi-dry">Semi-dry</option><option value="iBlot">iBlot</option></select></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Blocking buffer</label><input type="text" id="blockingBuffer" placeholder="5% milk in TBST"></div>
-      <div class="field"><label>Blocking time</label><input type="text" id="blockingDuration" placeholder="1h RT"></div>
+      <div class="field"><label>Blocking buffer</label><input type="text" id="blockingBuffer" placeholder="e.g. 5% milk in TBST"></div>
+      <div class="field"><label>Blocking time</label><input type="text" id="blockingDuration" placeholder="e.g. 1h RT"></div>
     </div>
   </div>
 
@@ -564,40 +564,42 @@
     <div class="ab-card ch700">
       <div class="ab-card-header"><h4>700 nm channel</h4><span class="channel-badge">700</span></div>
       <div class="form-row">
-        <div class="field"><label>Target</label><input type="text" id="p700Target" placeholder="phospho-ERK"></div>
+        <div class="field"><label>Target</label><input type="text" id="p700Target" placeholder="e.g. phospho-ERK"></div>
         <div class="field"><label>Host</label><select id="p700Host"><option value="">--</option><option value="rabbit">Rabbit</option><option value="mouse">Mouse</option><option value="goat">Goat</option><option value="rat">Rat</option></select></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Vendor</label><input type="text" id="p700Vendor" placeholder="Cell Signaling"></div>
-        <div class="field"><label>Catalog #</label><input type="text" id="p700Catalog" placeholder="#4370"></div>
+        <div class="field"><label>HAP ID</label><input type="text" id="p700HapId" placeholder="e.g. HAP-0421" title="Internal HAP antibody ID. If filled, vendor + catalog + lot are resolved automatically from the HAP database — no need to fill those below."></div>
+        <div class="field"><label>Vendor</label><input type="text" id="p700Vendor" placeholder="e.g. Cell Signaling"></div>
+        <div class="field"><label>Catalog #</label><input type="text" id="p700Catalog" placeholder="e.g. #4370"></div>
       </div>
       <div class="form-row triple">
         <div class="field"><label>Lot #</label><input type="text" id="p700Lot"></div>
-        <div class="field"><label>RRID</label><input type="text" id="p700Rrid" placeholder="AB_2315112"></div>
-        <div class="field"><label>Dilution</label><input type="text" id="p700Dilution" placeholder="1:1000"></div>
+        <div class="field"><label>RRID</label><input type="text" id="p700Rrid" placeholder="e.g. AB_2315112 (RRID)"></div>
+        <div class="field"><label>Dilution</label><input type="text" id="p700Dilution" placeholder="e.g. 1:1000"></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Incubation</label><input type="text" id="p700Incubation" placeholder="overnight 4C"></div>
+        <div class="field"><label>Incubation</label><input type="text" id="p700Incubation" placeholder="e.g. overnight 4C"></div>
         <div class="field"><label>Clonality</label><select id="p700Clonality"><option value="">--</option><option value="monoclonal">Monoclonal</option><option value="polyclonal">Polyclonal</option></select></div>
       </div>
     </div>
     <div class="ab-card ch800">
       <div class="ab-card-header"><h4>800 nm channel</h4><span class="channel-badge">800</span></div>
       <div class="form-row">
-        <div class="field"><label>Target</label><input type="text" id="p800Target" placeholder="beta-actin"></div>
+        <div class="field"><label>Target</label><input type="text" id="p800Target" placeholder="e.g. beta-actin"></div>
         <div class="field"><label>Host</label><select id="p800Host"><option value="">--</option><option value="rabbit">Rabbit</option><option value="mouse">Mouse</option><option value="goat">Goat</option><option value="rat">Rat</option></select></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Vendor</label><input type="text" id="p800Vendor" placeholder="LI-COR"></div>
-        <div class="field"><label>Catalog #</label><input type="text" id="p800Catalog" placeholder="#926-42212"></div>
+        <div class="field"><label>HAP ID</label><input type="text" id="p800HapId" placeholder="e.g. HAP-0823" title="Internal HAP antibody ID. If filled, vendor + catalog + lot are resolved automatically from the HAP database — no need to fill those below."></div>
+        <div class="field"><label>Vendor</label><input type="text" id="p800Vendor" placeholder="e.g. LI-COR"></div>
+        <div class="field"><label>Catalog #</label><input type="text" id="p800Catalog" placeholder="e.g. #926-42212"></div>
       </div>
       <div class="form-row triple">
         <div class="field"><label>Lot #</label><input type="text" id="p800Lot"></div>
         <div class="field"><label>RRID</label><input type="text" id="p800Rrid"></div>
-        <div class="field"><label>Dilution</label><input type="text" id="p800Dilution" placeholder="1:5000"></div>
+        <div class="field"><label>Dilution</label><input type="text" id="p800Dilution" placeholder="e.g. 1:5000"></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Incubation</label><input type="text" id="p800Incubation" placeholder="1h RT"></div>
+        <div class="field"><label>Incubation</label><input type="text" id="p800Incubation" placeholder="e.g. 1h RT"></div>
         <div class="field"><label>Clonality</label><select id="p800Clonality"><option value="">--</option><option value="monoclonal">Monoclonal</option><option value="polyclonal">Polyclonal</option></select></div>
       </div>
     </div>
@@ -607,12 +609,12 @@
   <div class="section">
     <div class="section-title">Secondary Antibodies</div>
     <div class="form-row">
-      <div class="field"><label>700 nm secondary</label><input type="text" id="s700Dye" placeholder="IRDye 680RD anti-rabbit"></div>
-      <div class="field"><label>800 nm secondary</label><input type="text" id="s800Dye" placeholder="IRDye 800CW anti-mouse"></div>
+      <div class="field"><label>700 nm secondary</label><input type="text" id="s700Dye" placeholder="e.g. IRDye 680RD anti-rabbit"></div>
+      <div class="field"><label>800 nm secondary</label><input type="text" id="s800Dye" placeholder="e.g. IRDye 800CW anti-mouse"></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>700 dilution</label><input type="text" id="s700Dilution" placeholder="1:10000"></div>
-      <div class="field"><label>800 dilution</label><input type="text" id="s800Dilution" placeholder="1:10000"></div>
+      <div class="field"><label>700 dilution</label><input type="text" id="s700Dilution" placeholder="e.g. 1:10000"></div>
+      <div class="field"><label>800 dilution</label><input type="text" id="s800Dilution" placeholder="e.g. 1:10000"></div>
     </div>
   </div>
 
@@ -645,11 +647,11 @@
   <div class="identity-row">
     <div class="id-pair">
       <span class="id-label">Project name</span>
-      <input type="text" class="id-field" id="projectHeader" placeholder="VB20260424"
+      <input type="text" class="id-field" id="projectHeader" placeholder="e.g. VB20260709"
              oninput="syncIdentity('projectHeader')">
       <span class="slash">/</span>
       <span class="id-label">Scan name</span>
-      <input type="text" class="id-field" id="scanNameHeader" placeholder="western_01"
+      <input type="text" class="id-field" id="scanNameHeader" placeholder="e.g. VB260709 (initials+YYMMDD)"
              oninput="syncIdentity('scanNameHeader')">
     </div>
   </div>
@@ -691,8 +693,10 @@ Affects the 800 view and the 800-tinted layer in Overlay.">
     </div>
     <button class="btn btn-small btn-secondary" id="btnBw" onclick="toggleBw()"
             title="Toggle grayscale rendering. Off = the standard 700 nm red / 800 nm green view; On = pure intensity, useful for publication figures.">B&amp;W</button>
+    <button class="btn btn-small btn-secondary" id="btnInvert" onclick="toggleInvert()"
+            title="Invert pixel intensity (dark bands on white background — the conventional Western-blot figure look). Combine with B&amp;W for pure dark-on-white.">Invert</button>
     <button class="btn btn-small btn-secondary" onclick="resetView()"
-            title="Reset zoom, pan, brightness, contrast and invert">Reset view</button>
+            title="Reset zoom, pan, brightness, contrast, B&amp;W and invert">Reset view</button>
     <!-- Explicit zoom controls for users who prefer buttons over wheel scroll. -->
     <button class="btn btn-small btn-secondary" onclick="zoomBy(1 / 1.25)" title="Zoom out">&minus;</button>
     <button class="btn btn-small btn-secondary" onclick="resetZoomOnly()"
@@ -843,6 +847,8 @@ const ViewerState = {
   tx: 0,
   ty: 0,
   bw: false,
+  invert: false, // dark-on-light rendering (classical Western-blot look
+                 // when combined with B&W)
   crop: null,    // null OR {x0, y0, x1, y1} normalized canvas-relative
   // Per-channel brightness/contrast (Vincent's lab feedback 2026-04-30 —
   // the two channels image different proteins; needing one global slider
@@ -1091,22 +1097,16 @@ function startSafetyNet() {
  * element id for the caller.
  */
 function validateRunRecord(data) {
+  // TODO #6 (2026-07-09): sample workflow / antibody workflow / operator
+  // are now OPTIONAL per user preference — many lab flows don't need
+  // that metadata upfront. Users decide whether to fill it in. Scan
+  // name + Project remain required so the file has a durable identity.
   const missing = [];
   const firstFocus = [];  // [label, elementId]
   if (!data.project || !data.project.trim())
     { missing.push('Project'); firstFocus.push(['Project', 'projectHeader']); }
   if (!data.scan_name || !data.scan_name.trim())
     { missing.push('Scan name'); firstFocus.push(['Scan name', 'scanNameHeader']); }
-  if (!data.operator || !data.operator.trim())
-    { missing.push('Operator'); firstFocus.push(['Operator', 'operator']); }
-  const meaningfulSamples = (data.samples || []).filter(s =>
-    s.name && s.name.trim() && s.name.trim().toLowerCase() !== 'ladder'
-  );
-  if (meaningfulSamples.length === 0)
-    { missing.push('at least one sample (non-Ladder)'); firstFocus.push(['sample', null]); }
-  const antibodiesWithTarget = (data.primary_antibodies || []).filter(a => a.target && a.target.trim());
-  if (antibodiesWithTarget.length === 0)
-    { missing.push('at least one primary antibody target'); firstFocus.push(['primary antibody', 'p700Target']); }
   return { ok: missing.length === 0, missing, firstFocus };
 }
 
@@ -1588,12 +1588,12 @@ function renderCanvas() {
 
 function drawChannelLayer(ctx, bitmap, tintColor, brightness, contrast) {
   // Draw one channel's grayscale bitmap onto a fresh offscreen canvas,
-  // apply that channel's brightness/contrast in place, then (unless
-  // B&W mode is on) multiply by the channel tint and blit. Doing B/C
-  // per-layer rather than once at the end lets 700 and 800 be
-  // balanced independently — the lab workflow when one channel's
-  // signal is much stronger than the other. B&W skips the tint so
-  // the image renders as pure intensity (publication-style).
+  // apply that channel's brightness/contrast in place, optionally invert
+  // (dark bands on light background = conventional blot look), then
+  // (unless B&W mode is on) multiply by the channel tint and blit.
+  // Doing B/C per-layer rather than once at the end lets 700 and 800
+  // be balanced independently — the lab workflow when one channel's
+  // signal is much stronger than the other.
   const w = ctx.canvas.width, h = ctx.canvas.height;
   const layer = document.createElement('canvas');
   layer.width = w; layer.height = h;
@@ -1601,6 +1601,9 @@ function drawChannelLayer(ctx, bitmap, tintColor, brightness, contrast) {
   lctx.drawImage(bitmap, 0, 0, w, h);
   if (brightness !== 0 || contrast !== 0) {
     applyBrightnessContrastTo(lctx, w, h, brightness, contrast);
+  }
+  if (ViewerState.invert) {
+    invertLayer(lctx, w, h);
   }
   if (!ViewerState.bw) {
     // Multiply by tint to give 700 red / 800 green.
@@ -1610,6 +1613,22 @@ function drawChannelLayer(ctx, bitmap, tintColor, brightness, contrast) {
     lctx.globalCompositeOperation = 'source-over';
   }
   ctx.drawImage(layer, 0, 0);
+}
+
+function invertLayer(ctx, w, h) {
+  // Pixel-wise 255 - v on R, G, B (alpha untouched). Gives dark bands
+  // on a light background when combined with B&W — the classical
+  // Western-blot figure look. On a coloured overlay it produces
+  // cyan/magenta blots (weird but harmless; users typically turn on
+  // B&W first).
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i]     = 255 - d[i];
+    d[i + 1] = 255 - d[i + 1];
+    d[i + 2] = 255 - d[i + 2];
+  }
+  ctx.putImageData(imgData, 0, 0);
 }
 
 function applyBrightnessContrastTo(ctx, w, h, brightness, contrast) {
@@ -1644,18 +1663,30 @@ function toggleBw() {
   renderCanvas();
 }
 
+function toggleInvert() {
+  // Toggle the "dark bands on light background" rendering. Independent
+  // of B&W — but the conventional Western-blot look (invert + B&W) is
+  // the intended combination. Colour + invert is niche; it works but
+  // produces cyan/magenta blots.
+  ViewerState.invert = !ViewerState.invert;
+  document.getElementById('btnInvert').classList.toggle('btn-warning', ViewerState.invert);
+  renderCanvas();
+}
+
 function resetView() {
   ViewerState.brightness_700 = 0;
   ViewerState.contrast_700 = 0;
   ViewerState.brightness_800 = 0;
   ViewerState.contrast_800 = 0;
   ViewerState.bw = false;
+  ViewerState.invert = false;
   for (const id of ['brightness_700','contrast_700','brightness_800','contrast_800']) {
     document.getElementById(id).value = 0;
   }
   document.getElementById('bc700Val').textContent = '0/0';
   document.getElementById('bc800Val').textContent = '0/0';
   document.getElementById('btnBw').classList.remove('btn-warning');
+  document.getElementById('btnInvert').classList.remove('btn-warning');
   // Also clear any pending crop
   ViewerState.crop = null;
   const cropBtn = document.getElementById('btnCrop');
@@ -1973,6 +2004,7 @@ async function attachExport(format, includeFooter) {
   data.brightness_800 = ViewerState.brightness_800;
   data.contrast_800   = ViewerState.contrast_800;
   data.bw             = ViewerState.bw;
+  data.invert         = ViewerState.invert;
   data.crop           = ViewerState.crop;
 
   try {
@@ -2066,7 +2098,7 @@ function addLane(name='', treatment='', ug='') {
   const tbody = document.getElementById('laneBody');
   const tr = document.createElement('tr');
   tr.id = `lane-${laneCount}`;
-  tr.innerHTML = `<td class="lane-num">${laneCount}</td><td><input type="text" class="lane-name" value="${name}" placeholder="Sample"></td><td><input type="text" class="lane-treatment" value="${treatment}" placeholder="Condition"></td><td><input type="number" class="lane-ug" value="${ug}" placeholder="ug" style="width:44px"></td><td><button class="btn btn-small btn-secondary" onclick="this.closest('tr').remove();renumberLanes()" style="padding:1px 5px">x</button></td>`;
+  tr.innerHTML = `<td class="lane-num">${laneCount}</td><td><input type="text" class="lane-name" value="${name}" placeholder="e.g. Sample 1"></td><td><input type="text" class="lane-treatment" value="${treatment}" placeholder="e.g. Vehicle"></td><td><input type="number" class="lane-ug" value="${ug}" placeholder="ug" style="width:44px"></td><td><button class="btn btn-small btn-secondary" onclick="this.closest('tr').remove();renumberLanes()" style="padding:1px 5px">x</button></td>`;
   tbody.appendChild(tr);
 }
 function renumberLanes() {
@@ -2112,8 +2144,8 @@ function collectRecord() {
     transfer_method: document.getElementById('transferMethod').value,
     blocking: { buffer: document.getElementById('blockingBuffer').value, duration: document.getElementById('blockingDuration').value },
     primary_antibodies: [
-      { target: document.getElementById('p700Target').value, host: document.getElementById('p700Host').value, clonality: document.getElementById('p700Clonality').value, vendor: document.getElementById('p700Vendor').value, catalog: document.getElementById('p700Catalog').value, lot: document.getElementById('p700Lot').value, rrid: document.getElementById('p700Rrid').value, dilution: document.getElementById('p700Dilution').value, channel: 700, incubation: document.getElementById('p700Incubation').value },
-      { target: document.getElementById('p800Target').value, host: document.getElementById('p800Host').value, clonality: document.getElementById('p800Clonality').value, vendor: document.getElementById('p800Vendor').value, catalog: document.getElementById('p800Catalog').value, lot: document.getElementById('p800Lot').value, rrid: document.getElementById('p800Rrid').value, dilution: document.getElementById('p800Dilution').value, channel: 800, incubation: document.getElementById('p800Incubation').value },
+      { hap_id: document.getElementById('p700HapId').value, target: document.getElementById('p700Target').value, host: document.getElementById('p700Host').value, clonality: document.getElementById('p700Clonality').value, vendor: document.getElementById('p700Vendor').value, catalog: document.getElementById('p700Catalog').value, lot: document.getElementById('p700Lot').value, rrid: document.getElementById('p700Rrid').value, dilution: document.getElementById('p700Dilution').value, channel: 700, incubation: document.getElementById('p700Incubation').value },
+      { hap_id: document.getElementById('p800HapId').value, target: document.getElementById('p800Target').value, host: document.getElementById('p800Host').value, clonality: document.getElementById('p800Clonality').value, vendor: document.getElementById('p800Vendor').value, catalog: document.getElementById('p800Catalog').value, lot: document.getElementById('p800Lot').value, rrid: document.getElementById('p800Rrid').value, dilution: document.getElementById('p800Dilution').value, channel: 800, incubation: document.getElementById('p800Incubation').value },
     ],
     secondary_antibodies: [
       { dye: document.getElementById('s700Dye').value, dilution: document.getElementById('s700Dilution').value, channel: 700 },
@@ -2223,7 +2255,10 @@ function renderPreviewBody(d) {
       if (a.channel) parts.push(`${a.channel} nm`);
       if (a.host) parts.push(_esc(a.host));
       if (a.clonality) parts.push(_esc(a.clonality));
-      if (a.vendor || a.catalog) parts.push(_esc([a.vendor, a.catalog].filter(Boolean).join(' ')));
+      // HAP ID (if present) is the canonical identifier — resolves to vendor+catalog+lot
+      // via the HAP database. Vendor/catalog shown only when HAP ID isn't filled.
+      if (a.hap_id) parts.push(`HAP ${_esc(a.hap_id)}`);
+      else if (a.vendor || a.catalog) parts.push(_esc([a.vendor, a.catalog].filter(Boolean).join(' ')));
       if (a.dilution) parts.push(_esc(a.dilution));
       if (a.lot) parts.push(`lot ${_esc(a.lot)}`);
       if (a.rrid) parts.push(_esc(a.rrid));

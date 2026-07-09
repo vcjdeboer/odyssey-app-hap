@@ -13,7 +13,7 @@ implementation (top = ship first).
 
 | Branch | Contains | Test surface | State |
 |---|---|---|---|
-| `feature-form-clarity` | #6 (required→optional), #10 (HAP ID), #14 (initials only), #20 (invert=black-on-white), #21 (placeholders as examples) | Frontend + light backend; no scan needed to verify | pending |
+| `feature-form-clarity` | #6 (required→optional), #10 (HAP ID), #14 (initials only), #20 (invert=black-on-white), #21 (placeholders as examples) | Frontend + light backend; no scan needed to verify | **shipped 2026-07-09** (branch pushed, awaiting real-lab check) |
 | `feature-metadata-flow` | #11 (pre-scan minimum + during-scan editable), #17 (reopen prior project) | Frontend workflow; needs a saved record to verify | pending |
 | `feature-display-and-lanes` | #2 (percentile contrast stretch), #18 (numbered lane strip + sample table on export) | Real scan needed for stretch; export-side for lanes | pending |
 | `feature-connection-heartbeat` | #8 (heartbeat / stale-tab), #4 (cooling detection) | Backend heartbeat + frontend banner; hardware to trigger cooling | pending |

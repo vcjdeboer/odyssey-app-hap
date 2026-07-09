@@ -1141,21 +1141,24 @@ def _tint_channel(img: "Image.Image", tint: tuple[int, int, int]) -> "Image.Imag
 async def _render_export_image(
     group: str, scan: str, view: str,
     b700: int, c700: int, b800: int, c800: int,
-    bw: bool,
+    bw: bool, invert: bool = False,
 ) -> Optional["Image.Image"]:
     """Compose the actual scan view into a PIL RGB image.
 
     Mirrors the UI's canvas pipeline so the rendered file matches what
     the user sees on screen at the moment of export. Pulls each
     channel's grayscale JPEG from the instrument (or the simulator
-    placeholder), applies per-channel brightness/contrast, tints
-    700→red and 800→green (unless ``bw`` mode is on) via a multiply
-    blend that mirrors ``drawChannelLayer`` in index.html, then
+    placeholder), applies per-channel brightness/contrast, optionally
+    inverts pixel intensity (dark bands on white — the classical blot
+    look), tints 700→red / 800→green (unless ``bw`` mode is on), then
     composites per the requested view.
 
-    ``bw=True`` skips tinting so the saved file matches the UI's
-    grayscale-mode rendering. Otherwise the overlay comes out in
-    red/green as displayed.
+    - ``bw=True`` skips tinting so the saved file matches the UI's
+      grayscale rendering.
+    - ``invert=True`` maps ``v`` → ``255 - v`` per pixel per channel,
+      applied AFTER B/C and BEFORE tint (mirrors ``invertLayer`` in
+      index.html). Combined with ``bw`` this is the conventional
+      dark-on-white Western-blot look.
     """
     needs700 = view in ("700", "overlay")
     needs800 = view in ("800", "overlay")
@@ -1168,6 +1171,12 @@ async def _render_export_image(
         img700 = _apply_bc(img700, b700, c700)
     if img800 is not None:
         img800 = _apply_bc(img800, b800, c800)
+    # Invert before tint — mirrors invertLayer() in the JS pipeline.
+    if invert:
+        if img700 is not None:
+            img700 = ImageOps.invert(img700)
+        if img800 is not None:
+            img800 = ImageOps.invert(img800)
     # Apply per-channel tint BEFORE compositing so overlay is red/green.
     # Skip when B&W mode is on — user wants pure intensity.
     if not bw:
@@ -1236,10 +1245,11 @@ async def export_image(data: dict):
     b800 = int(data.get("brightness_800", 0) or 0)
     c800 = int(data.get("contrast_800", 0) or 0)
     bw = bool(data.get("bw", False))
+    invert = bool(data.get("invert", False))
     crop = data.get("crop")  # None or {x0, y0, x1, y1} normalized 0-1
 
     rendered = await _render_export_image(
-        group, scan_name, view, b700, c700, b800, c800, bw,
+        group, scan_name, view, b700, c700, b800, c800, bw, invert,
     )
     if rendered is None:
         raise HTTPException(
@@ -1277,13 +1287,17 @@ async def export_image(data: dict):
         antibodies = metadata.get("primary_antibodies", [])
         for ab in antibodies[:2]:
             target = ab.get("target", "")
+            hap_id = (ab.get("hap_id") or "").strip()
             vendor = ab.get("vendor", "")
             catalog = ab.get("catalog", "")
             dilution = ab.get("dilution", "")
             ch = ab.get("channel", "")
             if target:
                 color = (255, 100, 100) if ch == 700 else (100, 255, 100)
-                text = f"{ch}nm: {target} ({vendor} {catalog}, {dilution})"
+                # HAP ID (if filled) is preferred — HAP DB resolves to vendor+catalog+lot.
+                # Falls back to vendor+catalog for antibodies not yet in the HAP DB.
+                antibody_ref = hap_id if hap_id else f"{vendor} {catalog}".strip()
+                text = f"{ch}nm: {target} ({antibody_ref}, {dilution})"
                 draw.text((5, y), text, fill=color)
                 y += 14
         settings = metadata.get("scan_settings", {})
@@ -1301,6 +1315,7 @@ async def export_image(data: dict):
         "brightness_700": b700, "contrast_700": c700,
         "brightness_800": b800, "contrast_800": c800,
         "bw": bw,
+        "invert": invert,
         "view": view,
         "crop": crop,
         "tint": "off" if bw else "red_green",
