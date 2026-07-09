@@ -1771,9 +1771,13 @@ async def list_records():
     quality, intensities, scan area). The history panel renders these
     without having to fetch each full record.
     """
+    # Cap raised to 500 (2026-07-09) to comfortably hold years of lab
+    # work in the prior-scans list. Each JSON is small (~1 KB) so 500
+    # rows serialize in <200 ms even on the slower lab box. Beyond
+    # 500 we'd want an index or pagination — flag if it ever bites.
     files = sorted(RECORDS_DIR.glob("*.json"), reverse=True)
     records = []
-    for f in files[:50]:
+    for f in files[:500]:
         try:
             d = json.loads(f.read_text())
             s = d.get("scan_settings", {}) or {}

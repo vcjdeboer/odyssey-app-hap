@@ -2587,9 +2587,12 @@ async function refreshHistory() {
       html += mine.map(renderHistoryItem).join('');
     }
     if (others.length > 0) {
-      html += '<div class="history-divider">Prior scans (reopen to edit / re-export)</div>';
+      html += `<div class="history-divider">Prior scans · ${others.length} (reopen to edit / re-export)</div>`;
+      // No hard cap — the sidebar already scrolls via overflow-y:auto,
+      // and the backend caps at 500 records so this is bounded. If we
+      // hit the 500 cap we'd add "load more" pagination.
       html += '<div class="prior-list">'
-            + others.slice(0, 40).map(renderPriorScanRow).join('')
+            + others.map(renderPriorScanRow).join('')
             + '</div>';
     }
     listEl.innerHTML = html;
