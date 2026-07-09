@@ -345,9 +345,54 @@ This wipes and rebuilds `~/Desktop/odyssey/`. Copy across again.
   auto-browser-open if you're running headless.
 MD
 
+# ---- version stamp ----
+# Record which source produced this deploy, so the lab box can prove
+# which version it's running and rollback is unambiguous. See
+# odyssey_app/DEPLOY_LOG.md for the rollback procedure.
+GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+GIT_BRANCH="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+GIT_TAGS="$(git -C "${REPO_ROOT}" tag --points-at HEAD 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+GIT_DIRTY=""
+if ! git -C "${REPO_ROOT}" diff --quiet HEAD 2>/dev/null; then
+  GIT_DIRTY=" (uncommitted changes present)"
+fi
+DEPLOY_DATE="$(date +%Y-%m-%d)"
+LAB_TAG=""
+for t in ${GIT_TAGS}; do
+  case "$t" in lab-*) LAB_TAG="$t";; esac
+done
+
+cat > "${DEST}/DEPLOYED_VERSION.txt" <<EOF
+Odyssey Western Blot Imager — deployed version marker
+
+Deploy date:  ${DEPLOY_DATE}
+Commit:       ${GIT_COMMIT}${GIT_DIRTY}
+Branch:       ${GIT_BRANCH}
+Tags at HEAD: ${GIT_TAGS:-<none>}
+Lab tag:      ${LAB_TAG:-<none — not tagged as a lab release>}
+
+To reproduce this deploy exactly:
+    git checkout ${LAB_TAG:-${GIT_COMMIT}}
+    scripts/deploy_to_desktop.sh
+
+Rollback procedure: see odyssey_app/DEPLOY_LOG.md in the source repo.
+EOF
+
+if [[ -z "${LAB_TAG}" ]]; then
+  echo "WARNING: HEAD is not tagged with a lab-* tag." >&2
+  echo "         Before copying this deploy to the lab, tag the commit:" >&2
+  echo "           git tag lab-${DEPLOY_DATE} ${GIT_COMMIT}" >&2
+  echo "         and add a row to odyssey_app/DEPLOY_LOG.md." >&2
+fi
+if [[ -n "${GIT_DIRTY}" ]]; then
+  echo "WARNING: uncommitted changes present — this deploy is not reproducible from git alone." >&2
+fi
+
 # ---- summary ----
 echo "==> done."
 ( cd "${DEST}" && ls -la )
 echo
 echo -n "size: "
 du -sh "${DEST}" | cut -f1
+echo
+echo "version: ${LAB_TAG:-untagged} · ${GIT_COMMIT}${GIT_DIRTY} · ${GIT_BRANCH}"
