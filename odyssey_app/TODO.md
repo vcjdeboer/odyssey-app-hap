@@ -4,6 +4,31 @@ description: Open TODOs for the Odyssey scanner app — intensity/quantification
 type: project
 originSessionId: 2b182133-b93c-4031-a707-b8fcf5b67f37
 ---
+## Branch plan (2026-07-09)
+
+Remaining open items grouped into feature branches. Each branch is
+scoped to touch a coherent slice of code, be reviewable in one pass,
+and land as a single deploy candidate. Order = suggested order of
+implementation (top = ship first).
+
+| Branch | Contains | Test surface | State |
+|---|---|---|---|
+| `feature-form-clarity` | #6 (required→optional), #10 (HAP ID), #14 (initials only), #20 (invert=black-on-white), #21 (placeholders as examples) | Frontend + light backend; no scan needed to verify | pending |
+| `feature-metadata-flow` | #11 (pre-scan minimum + during-scan editable), #17 (reopen prior project) | Frontend workflow; needs a saved record to verify | pending |
+| `feature-display-and-lanes` | #2 (percentile contrast stretch), #18 (numbered lane strip + sample table on export) | Real scan needed for stretch; export-side for lanes | pending |
+| `feature-connection-heartbeat` | #8 (heartbeat / stale-tab), #4 (cooling detection) | Backend heartbeat + frontend banner; hardware to trigger cooling | pending |
+| `feature-pdf-report` | #12 (PDF report replacing JSON) | Backend renderer; drops into experiment ZIP | pending |
+| `feature-lab-file-routing` | #5 (C:\data\employees\students\year\operator routing + auto-export) | Windows-side path config; needs lab-box test | pending |
+| `feature-provenance-qr` | #16 (QR/barcode in image corner), #3c-e (intensity hardware equivalence protocol) | Real scan needed for equivalence test | pending |
+| deferred | #13 (click-to-label lanes — "for later, lot of work") | — | deferred |
+
+## Shipped (`lab-2026-05-01` + 2026-07-09 feature branch)
+- ✅ #1 raw 16-bit TIFF export (Normal TIFF + ImageJ HyperStack)
+- ✅ #7 real PLR integration (Phase 33+)
+- ✅ #9 red/green tint restored in presentation export
+- ✅ #15 PIDinst Handle in TIFF metadata (extended schema in private tag 65000)
+- ✅ #19 transform record stamped in every presentation export
+
 ## Top priority — data correctness
 
 1. **✅ SHIPPED 2026-07-09** — TIFF export now preserves raw 16-bit data. Three-button design implemented on branch `feature-raw-tiff-exports`:
@@ -193,6 +218,18 @@ originSessionId: 2b182133-b93c-4031-a707-b8fcf5b67f37
     - **Brightness gap** — `_apply_bc` (`odyssey_app/app.py:873`) uses `v' = cf * ((v + brightness) - 128) + 128` with `cf = (259 * (contrast + 255)) / (255 * (259 - contrast))`, same formula as the on-screen canvas. So a user with brightness>0 sees AND exports a brightened image; that's WYSIWYG, not a bug, but must be documented.
     - **Action**: every export (PNG + presentation-TIFF + raw-TIFF sidecar) records the applied transform as a machine-readable block in metadata: `{"brightness_700": +X, "contrast_700": +Y, "brightness_800": +A, "contrast_800": +B, "invert": bool, "bw": bool, "stretch": "off"|"percentile 0.5/99.5", "crop": [x,y,w,h] | null, "tint": "off"|"red_green"}`. Same block goes into (a) PNG tEXt chunks (already used by `PngInfo` at app.py:1044), (b) TIFF tag 270 (image description, alongside existing PIDinst identity), (c) the PDF report footer (#12). This makes the raw↔exported delta reconstructible from the file alone.
     - Overarching principle (user, 2026-07-09): **capture raw pixels, record every transform**. Same principle as #1's overarching note — this item is the "record every transform" half.
+
+20. **Invert = black bands on white background** (user feedback 2026-07-09) — the current "invert" toggle likely flips something in RGB space, but the scientific reading users want is **B&W-invert**: raw signal (bright pixels = signal) shown as **dark pixels on a light background**, the classical Western-blot look. Applies whenever the B&W toggle is on:
+   - Off + not-invert: red/green colored overlay (current)
+   - On (B&W) + not-invert: bright bands on dark (current B&W)
+   - On (B&W) + invert: **dark bands on white** ← this is what users want and how blots are conventionally shown in figures.
+   - Coloured + invert is a niche case; skip unless a user asks.
+   - Frontend: apply after B&W conversion in `drawChannelLayer` in index.html; backend: same in `_render_export_image` (before the tint step, or by inverting the greyscale mask). Verify the change is recorded in the transform record (#19 schema) as `"invert": true`.
+
+21. **Form field placeholders — clearly mark as examples** (user feedback 2026-07-09) — the metadata form has placeholders like "Sample", "Condition", "#4370" that some users read as pre-filled values rather than examples they should overwrite. Make them unambiguous:
+   - Prefix with **"e.g."** or **"fill: e.g."** so it's clear the field is expected to be filled, not left as-is.
+   - For fields where the user's own identity flows in (scan name, project, operator), suggest a pattern rather than a random-looking placeholder: e.g. scan name → `e.g. VB260709` (initials + YYMMDD), operator → `e.g. VB` (initials), project → `e.g. NR3C1-timecourse`.
+   - Sweep all `placeholder="..."` attributes in `odyssey_app/static/index.html` (form section) — currently ~20 of them. Consistent prefix + pattern per field.
 
 ## Worth deciding on
 
