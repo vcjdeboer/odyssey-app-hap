@@ -45,6 +45,7 @@ try:
     from plr_v4.odyssey.tagging import (
         build_identity_description,
         tag_tiff_with_identity,
+        write_hyperstack,
     )
     from plr_v4.capabilities.scanning import Scanning
     from plr_v4.capabilities.image_retrieval import ImageRetrieval
@@ -67,6 +68,8 @@ except ImportError:
         return raw or "Idle"
     def build_identity_description(*a, **kw): return "{}"
     def tag_tiff_with_identity(raw, *a, **kw): return raw
+    def write_hyperstack(*a, **kw):
+        raise RuntimeError("PLR not available — cannot write HyperStack TIFF")
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageOps
@@ -99,20 +102,88 @@ def _identity() -> dict:
     return dict((_DEVICE_CARD.identity if _DEVICE_CARD is not None else {}) or {})
 
 
+SOFTWARE_TAG = "Odyssey Western Blot Imager (PLR_v4)"
+
+
 def _tag_tiff(
     raw_bytes: bytes,
     *,
     scan_name: str = "",
     channel: Optional[int] = None,
+    scan_params: Optional[dict] = None,
+    session: Optional[dict] = None,
+    transforms: Optional[dict] = None,
 ) -> bytes:
-    """Thin app-side wrapper: stamp the active card's identity into a TIFF."""
+    """Thin app-side wrapper: stamp the active card's identity + provenance
+    into a TIFF via the private tag 65000, preserving vendor's 270/305.
+
+    ``transforms=None`` (default) marks the file as raw — no display-time
+    transforms applied. Presentation exports pass a dict describing the
+    B/C/bw/crop/tint applied at render time.
+    """
     if _DEVICE_CARD is None:
         return raw_bytes
     return tag_tiff_with_identity(
         raw_bytes, _DEVICE_CARD,
         scan_name=scan_name, channel=channel,
-        software_tag="Odyssey Western Blot Imager (PLR_v4)",
+        scan_params=scan_params, session=session, transforms=transforms,
+        software_tag=SOFTWARE_TAG,
     )
+
+
+def _build_scan_params(record: Optional[dict]) -> Optional[dict]:
+    """Extract the scanner-facing parameters from a run record for the
+    TIFF metadata block. Missing keys drop out (compact JSON)."""
+    if not record:
+        return None
+    settings = record.get("scan_settings") or {}
+    out: dict = {}
+    for key in (
+        "intensity_700", "intensity_800", "resolution_um", "quality",
+        "focus_offset_mm", "width_cm", "height_cm",
+        "scan_group", "channels",
+    ):
+        val = settings.get(key)
+        if val not in (None, ""):
+            out[key] = val
+    return out or None
+
+
+def _find_record(experiment_id: str, scan_name: str) -> Optional[dict]:
+    """Load the most recent run record matching (experiment_id, scan_name).
+
+    Returns None if no matching record exists. Used by the export endpoints
+    to populate scan-parameter provenance into the exported file metadata.
+    """
+    if not (experiment_id and scan_name):
+        return None
+    for f in sorted(RECORDS_DIR.glob("*.json"), reverse=True):
+        try:
+            d = json.loads(f.read_text())
+        except Exception:
+            continue
+        if d.get("experiment_id") == experiment_id and d.get("scan_name") == scan_name:
+            return d
+    return None
+
+
+def _build_session_ctx(
+    record: Optional[dict], experiment_id: str, scan_name: str
+) -> dict:
+    """Build the session-context sub-block for TIFF metadata."""
+    ctx = {
+        "experiment_id": experiment_id,
+        "scan_name": scan_name,
+        "exported_at": datetime.now().isoformat(),
+    }
+    if record:
+        op = record.get("operator")
+        if op:
+            ctx["operator"] = op
+        completed = record.get("scan_completed_at")
+        if completed:
+            ctx["scan_completed_at"] = completed
+    return ctx
 
 
 def _identity_description(scan_name: str = "", channel: Optional[int] = None) -> str:
@@ -852,13 +923,22 @@ async def download_tiff(
     channel: int, group: str = "public", scan: str = "",
     experiment_id: Optional[str] = None,
 ):
-    """Download raw TIFF for one channel (700 or 800)."""
+    """Download raw TIFF for one channel (700 or 800).
+
+    Legacy endpoint kept for direct-download workflows. For the button-
+    driven "attach to experiment" flow prefer /api/image/raw-both which
+    saves both channels into the exports folder in one call.
+    """
     if _image_driver and _odyssey_driver and hasattr(_image_driver.backend, "download_channel"):
         instrument_scan = _resolve_instrument_scan(scan, experiment_id)
         try:
             tiff_bytes = await _image_driver.backend.download_channel(group, instrument_scan, channel)
+            record = _find_record(experiment_id or "", scan)
             tiff_bytes = _tag_tiff(
                 tiff_bytes, scan_name=scan, channel=channel,
+                scan_params=_build_scan_params(record),
+                session=_build_session_ctx(record, experiment_id or "", scan),
+                transforms=None,  # raw
             )
             return Response(
                 content=tiff_bytes,
@@ -868,6 +948,158 @@ async def download_tiff(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     raise HTTPException(status_code=404, detail="Not available in simulated mode")
+
+
+@app.post("/api/image/raw-both")
+async def attach_raw_both(data: dict):
+    """Attach raw 16-bit per-channel TIFFs (700 + 800) to an experiment.
+
+    This is the **quantification-of-record artefact**. Downloads the
+    untouched vendor TIFF for each channel, re-tags with the extended
+    provenance JSON (identity + scan_params + session, transforms=None),
+    and writes both to
+    ``odyssey_app/exports/<experiment_id>/<scan>-700-raw.tif`` +
+    ``<scan>-800-raw.tif``. Bundled by the experiment ZIP.
+
+    Request body: ``{"experiment_id": str, "scan_name": str}``.
+    """
+    scan_name = (data.get("scan_name") or "").strip()
+    experiment_id = (data.get("experiment_id") or "").strip()
+    if not experiment_id:
+        raise HTTPException(status_code=400, detail="experiment_id is required")
+    if not scan_name:
+        raise HTTPException(status_code=400, detail="scan_name is required")
+    if not (_image_driver and _odyssey_driver
+            and hasattr(_image_driver.backend, "download_channel")):
+        raise HTTPException(status_code=404, detail="Raw TIFF path not available in simulated mode")
+
+    record = _find_record(experiment_id, scan_name)
+    scan_params = _build_scan_params(record)
+    session = _build_session_ctx(record, experiment_id, scan_name)
+
+    instrument_scan = _resolve_instrument_scan(scan_name, experiment_id)
+    exp_dir = EXPORTS_DIR / _safe(experiment_id)
+    exp_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[dict] = []
+    for channel in (700, 800):
+        try:
+            raw = await _image_driver.backend.download_channel(
+                DEFAULT_GROUP, instrument_scan, channel,
+            )
+        except Exception as e:
+            logging.info("Channel %d not available for raw export: %s", channel, e)
+            continue
+        tagged = _tag_tiff(
+            raw, scan_name=scan_name, channel=channel,
+            scan_params=scan_params, session=session,
+            transforms=None,  # raw pixels, no display-time transforms
+        )
+        target = exp_dir / f"{_safe(scan_name)}-{channel}-raw.tif"
+        counter = 2
+        while target.exists():
+            target = exp_dir / f"{_safe(scan_name)}-{channel}-raw_{counter}.tif"
+            counter += 1
+        target.write_bytes(tagged)
+        written.append({
+            "channel": channel,
+            "filename": target.name,
+            "bytes": len(tagged),
+        })
+
+    if not written:
+        raise HTTPException(status_code=502, detail="No channels available on the instrument")
+
+    return {
+        "status": "attached",
+        "experiment_id": experiment_id,
+        "scan_name": scan_name,
+        "variant": "raw",
+        "files": written,
+    }
+
+
+@app.post("/api/image/hyperstack")
+async def attach_hyperstack(data: dict):
+    """Attach an ImageJ HyperStack TIFF (16-bit × 2 channels, red/green LUT).
+
+    Downloads both raw channels, decodes to numpy arrays, and writes a
+    single multi-channel TIFF with ImageJ-flavoured metadata so Fiji
+    opens it already colorized red/green. Underlying arrays stay
+    separate 16-bit grayscale planes — densitometry works directly.
+
+    Windows-without-Fiji viewers see only channel 0 (700 nm) as
+    grayscale; documented in TODO #1b.
+
+    Request body: ``{"experiment_id": str, "scan_name": str}``.
+    """
+    scan_name = (data.get("scan_name") or "").strip()
+    experiment_id = (data.get("experiment_id") or "").strip()
+    if not experiment_id:
+        raise HTTPException(status_code=400, detail="experiment_id is required")
+    if not scan_name:
+        raise HTTPException(status_code=400, detail="scan_name is required")
+    if not (_image_driver and _odyssey_driver
+            and hasattr(_image_driver.backend, "download_channel")):
+        raise HTTPException(status_code=404, detail="Raw TIFF path not available in simulated mode")
+    if _DEVICE_CARD is None:
+        raise HTTPException(status_code=500, detail="DeviceCard unavailable — cannot stamp identity")
+
+    import numpy as np
+    try:
+        import tifffile
+    except ImportError:
+        raise HTTPException(status_code=500, detail="tifffile not installed")
+
+    instrument_scan = _resolve_instrument_scan(scan_name, experiment_id)
+    channels: dict[int, "np.ndarray"] = {}
+    for channel in (700, 800):
+        try:
+            raw = await _image_driver.backend.download_channel(
+                DEFAULT_GROUP, instrument_scan, channel,
+            )
+        except Exception as e:
+            logging.info("Channel %d not available for hyperstack: %s", channel, e)
+            continue
+        try:
+            with tifffile.TiffFile(io.BytesIO(raw)) as tif:
+                channels[channel] = tif.pages[0].asarray()
+        except Exception as e:
+            logging.info("Channel %d parse failed for hyperstack: %s", channel, e)
+            continue
+
+    if len(channels) < 2:
+        raise HTTPException(
+            status_code=502,
+            detail=f"HyperStack needs both channels; got {sorted(channels)}",
+        )
+
+    record = _find_record(experiment_id, scan_name)
+    hyperstack_bytes = write_hyperstack(
+        channels[700], channels[800], _DEVICE_CARD,
+        scan_name=scan_name,
+        scan_params=_build_scan_params(record),
+        session=_build_session_ctx(record, experiment_id, scan_name),
+        software_tag=SOFTWARE_TAG,
+    )
+
+    exp_dir = EXPORTS_DIR / _safe(experiment_id)
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    target = exp_dir / f"{_safe(scan_name)}-hyperstack.tif"
+    counter = 2
+    while target.exists():
+        target = exp_dir / f"{_safe(scan_name)}-hyperstack_{counter}.tif"
+        counter += 1
+    target.write_bytes(hyperstack_bytes)
+
+    return {
+        "status": "attached",
+        "experiment_id": experiment_id,
+        "scan_name": scan_name,
+        "variant": "hyperstack",
+        "filename": target.name,
+        "bytes": len(hyperstack_bytes),
+    }
 
 
 def _apply_bc(img: "Image.Image", brightness: int, contrast: int) -> "Image.Image":
@@ -886,6 +1118,26 @@ def _apply_bc(img: "Image.Image", brightness: int, contrast: int) -> "Image.Imag
     return Image.fromarray(arr, img.mode)
 
 
+def _tint_channel(img: "Image.Image", tint: tuple[int, int, int]) -> "Image.Image":
+    """Multiply an RGB grayscale image by a tint colour (700→red, 800→green).
+
+    The vendor JPEG preview comes back as a single-channel grayscale for
+    each channel — no tint. The on-screen canvas colorizes in JS via
+    ``globalCompositeOperation = 'multiply'`` on a solid tint fill
+    (``drawChannelLayer`` in ``index.html``). We mirror that here so the
+    server-side compositor produces the same red/green view the user
+    sees on screen — otherwise exports come back grayscale, which was
+    the long-standing "TIFF-comes-out-B&W" bug.
+    """
+    arr = np.array(img, dtype=np.int16)  # (H, W, 3)
+    tr, tg, tb = tint
+    arr[..., 0] = (arr[..., 0] * tr) // 255
+    arr[..., 1] = (arr[..., 1] * tg) // 255
+    arr[..., 2] = (arr[..., 2] * tb) // 255
+    arr = arr.clip(0, 255).astype(np.uint8)
+    return Image.fromarray(arr, img.mode)
+
+
 async def _render_export_image(
     group: str, scan: str, view: str,
     b700: int, c700: int, b800: int, c800: int,
@@ -894,13 +1146,16 @@ async def _render_export_image(
     """Compose the actual scan view into a PIL RGB image.
 
     Mirrors the UI's canvas pipeline so the rendered file matches what
-    Vincent sees on screen at the moment of export. Pulls each channel's
-    pre-tinted JPEG from the instrument (or the simulator placeholder),
-    applies per-channel brightness/contrast, then composites per the
-    requested view (single channel or 'lighter'-blended overlay).
+    the user sees on screen at the moment of export. Pulls each
+    channel's grayscale JPEG from the instrument (or the simulator
+    placeholder), applies per-channel brightness/contrast, tints
+    700→red and 800→green (unless ``bw`` mode is on) via a multiply
+    blend that mirrors ``drawChannelLayer`` in index.html, then
+    composites per the requested view.
 
-    ``bw=True`` desaturates the result so the saved file matches the
-    UI's grayscale-mode rendering.
+    ``bw=True`` skips tinting so the saved file matches the UI's
+    grayscale-mode rendering. Otherwise the overlay comes out in
+    red/green as displayed.
     """
     needs700 = view in ("700", "overlay")
     needs800 = view in ("800", "overlay")
@@ -913,6 +1168,13 @@ async def _render_export_image(
         img700 = _apply_bc(img700, b700, c700)
     if img800 is not None:
         img800 = _apply_bc(img800, b800, c800)
+    # Apply per-channel tint BEFORE compositing so overlay is red/green.
+    # Skip when B&W mode is on — user wants pure intensity.
+    if not bw:
+        if img700 is not None:
+            img700 = _tint_channel(img700, (255, 0, 0))    # 700 nm → red
+        if img800 is not None:
+            img800 = _tint_channel(img800, (0, 255, 0))    # 800 nm → green
 
     if view == "700":
         out = img700
@@ -1031,21 +1293,42 @@ async def export_image(data: dict):
         info_line = f"Res: {res}um  {operator}  {exp_id}"
         draw.text((5, y), info_line, fill=(150, 150, 150))
 
+    # Build the transform record for the metadata payload — records
+    # every display-time knob applied to derive this file from raw pixels.
+    # Anyone opening the exported file can now reconstruct raw↔exported delta.
+    record_for_meta = _find_record(experiment_id, scan_name)
+    transforms = {
+        "brightness_700": b700, "contrast_700": c700,
+        "brightness_800": b800, "contrast_800": c800,
+        "bw": bw,
+        "view": view,
+        "crop": crop,
+        "tint": "off" if bw else "red_green",
+        "stretch": "off",  # TODO #2: percentile stretch not yet wired
+    }
+    provenance_json = build_identity_description(
+        _DEVICE_CARD, scan_name=scan_name,
+        scan_params=_build_scan_params(record_for_meta),
+        session=_build_session_ctx(record_for_meta, experiment_id, scan_name),
+        transforms=transforms,
+    ) if _DEVICE_CARD is not None else "{}"
+
     buf = io.BytesIO()
     if format == "tiff":
         img.save(buf, format="TIFF", tiffinfo={
-            270: _identity_description(scan_name=scan_name),
-            305: "Odyssey Western Blot Imager (PLR_v4)",
+            270: provenance_json,
+            305: SOFTWARE_TAG,
         })
         ext = "tif"
     else:
-        # PNG: stash PID in tEXt chunks via PngInfo.
+        # PNG: stash provenance in tEXt chunks via PngInfo.
         from PIL.PngImagePlugin import PngInfo
         pnginfo = PngInfo()
         for k, v in _identity().items():
             pnginfo.add_text(f"instrument_{k}", str(v))
         if scan_name:
             pnginfo.add_text("scan_name", scan_name)
+        pnginfo.add_text("provenance_json", provenance_json)
         img.save(buf, format="PNG", pnginfo=pnginfo)
         ext = "png"
     buf.seek(0)

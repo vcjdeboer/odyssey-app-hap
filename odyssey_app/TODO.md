@@ -6,7 +6,15 @@ originSessionId: 2b182133-b93c-4031-a707-b8fcf5b67f37
 ---
 ## Top priority — data correctness
 
-1. **TIFF export must preserve raw 16-bit data** (refined 2026-05-11, reinforced 2026-07-09 with second lab-user screenshot) — current TIFF export goes through the display canvas and ends up as 8-bit RGB with quantization splotches in the background. **Evidence (lab user, 2026-07-09)**: side-by-side ImageJ screenshots of `Nr3c1-800.tif` (raw scanner, 531×472, **16-bit grayscale**, 490 KB, clean background) vs `Nr3c1__overlay-tiff.tif` (our export, 531×552 including the 80-row metadata footer, **RGB 8-bit**, 1.1 MB, visibly blotchy background at the same sharpness). Blotchiness = 8-bit dithering in low-signal areas; band-region pixels still read sharply because they're above the quantization noise floor. Densitometry on this would inflate background estimates and corrupt ratio quantification.
+1. **✅ SHIPPED 2026-07-09** — TIFF export now preserves raw 16-bit data. Three-button design implemented on branch `feature-raw-tiff-exports`:
+   - **Normal TIFF** → `/api/image/raw-both` writes two raw 16-bit grayscale TIFFs (`<scan>-700-raw.tif`, `<scan>-800-raw.tif`) to the exports folder. Provenance JSON in TIFF private tag 65000 via `tag_tiff_with_identity` (rewritten on top of `tifffile`, preserves vendor tags 270/305 verbatim).
+   - **ImageJ TIFF** → `/api/image/hyperstack` writes a single ImageJ HyperStack (C=2, 16-bit each, red/green LUT metadata). Opens colored in Fiji, quantifiable per channel.
+   - **Presentation TIFF** → existing `/api/image/export` path, rebadged; now with the transform record and the red/green tint bug fixed.
+   - Metadata schema: identity + scan_params + session + transforms. `transforms=null` on raw paths; populated on presentation.
+
+   Original problem statement preserved below for reference:
+
+   > TIFF export must preserve raw 16-bit data (refined 2026-05-11, reinforced 2026-07-09 with second lab-user screenshot) — current TIFF export goes through the display canvas and ends up as 8-bit RGB with quantization splotches in the background. **Evidence (lab user, 2026-07-09)**: side-by-side ImageJ screenshots of `Nr3c1-800.tif` (raw scanner, 531×472, **16-bit grayscale**, 490 KB, clean background) vs `Nr3c1__overlay-tiff.tif` (our export, 531×552 including the 80-row metadata footer, **RGB 8-bit**, 1.1 MB, visibly blotchy background at the same sharpness). Blotchiness = 8-bit dithering in low-signal areas; band-region pixels still read sharply because they're above the quantization noise floor. Densitometry on this would inflate background estimates and corrupt ratio quantification.
 
    ### 1a. Raw per-channel TIFF (primary quantification artefact)
    - Route: `/api/image/tiff/{channel}` at `odyssey_app/app.py:850` → `download_channel` at `plr_v4/odyssey/image_backend.py:39` → `download_tiff` at `plr_v4/odyssey/connection.py:601` → vendor endpoint `GET /scan/image/<scan>-<ch>.tif?xml=<format>tiff</format>...`.
@@ -143,7 +151,9 @@ originSessionId: 2b182133-b93c-4031-a707-b8fcf5b67f37
    - Always-visible connection indicator (green/red) in header
    - Configure (and other actions) fail fast with clear error toast, not hang
 
-9. **PNG export = export current view** (user feedback 2026-05-11, bug confirmed 2026-07-09) — PNG (presentation) export should mirror what's on screen:
+9. **✅ SHIPPED 2026-07-09** — Red/green tint restored in presentation exports. `_render_export_image` (app.py) now tints 700→red and 800→green via a multiply blend that mirrors `drawChannelLayer` in index.html, before `ImageChops.lighter` composites the overlay. Skipped when `bw=true`. Original bug:
+
+   **PNG export = export current view** (user feedback 2026-05-11, bug confirmed 2026-07-09) — PNG (presentation) export should mirror what's on screen:
    - If cropped → export crop only ✓ (frontend sends `crop`)
    - If color overlay displayed → export **red/green** color — **STILL BROKEN**: exports come out grayscale regardless of the on-screen colorized overlay. Root cause: `_render_export_image` in `odyssey_app/app.py:889` fetches each channel via `_render_single_channel` → `get_preview(channels="700")` which returns single-channel grayscale from the vendor server; `Image.open(...).convert("RGB")` produces `(v,v,v)` grayscale; `ImageChops.lighter(img700, img800)` on two grayscales is still grayscale. The on-screen canvas colorizes in JS (`renderChannelCanvas`), the server-side compositor does not. Fix: apply the 700→red / 800→green tint in `_render_export_image` before compositing (or fetch a pre-tinted preview if the vendor server supports it).
    - If B&W invert displayed → export B&W invert (invert path also needs verification)
@@ -175,7 +185,9 @@ originSessionId: 2b182133-b93c-4031-a707-b8fcf5b67f37
     - **Sample table**: rendered in the export footer (below the image) and in the PDF report (#12). Currently the JSON has lanes; just needs a printed layout.
     - Precursor to #13 (which is click-to-position). This gets 80% of the value with 20% of the work.
 
-19. **"Why does the exported image look brighter / blotchier than raw?"** (user feedback 2026-07-09, ties into #1 + #3) — user specifically flagged: check if signal processing between raw TIFF and exported presentation makes the image look different. **The lab user's 2026-07-09 evidence** identifies the two sources concretely:
+19. **✅ SHIPPED 2026-07-09** — Transform record stamped into every presentation export (TIFF tag 270 + PNG `provenance_json` tEXt chunk). Fields: `brightness_700/800`, `contrast_700/800`, `bw`, `view`, `crop`, `tint`, `stretch`. Raw-path exports (`Normal TIFF`, `ImageJ TIFF`) mark `transforms: null` so tools know the file is quantifiable directly. Blotchiness fix comes from (1a) raw path; brightness delta is now reproducible from the stamped record. Original brief:
+
+   **"Why does the exported image look brighter / blotchier than raw?"** (user feedback 2026-07-09, ties into #1 + #3) — user specifically flagged: check if signal processing between raw TIFF and exported presentation makes the image look different. **The lab user's 2026-07-09 evidence** identifies the two sources concretely:
     - **Blotchy background** = 16→8 bit quantization on the display canvas (covered by #1's raw-TIFF path)
     - **"Vlekkeriger" appearance** persists even at neutral brightness/contrast because 8-bit only has 256 grey levels; the raw 16-bit has 65 536. Fixed by #1 (raw path) + #2 (percentile stretch for display).
     - **Brightness gap** — `_apply_bc` (`odyssey_app/app.py:873`) uses `v' = cf * ((v + brightness) - 128) + 128` with `cf = (259 * (contrast + 255)) / (255 * (259 - contrast))`, same formula as the on-screen canvas. So a user with brightness>0 sees AND exports a brightened image; that's WYSIWYG, not a bug, but must be documented.

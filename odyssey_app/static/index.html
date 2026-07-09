@@ -726,7 +726,11 @@ Affects the 800 view and the 800-tinted layer in Overlay.">
     <button class="btn btn-small btn-secondary attach-btn" onclick="attachExport('png', false)"
             title="Render the current view as a clean PNG (no footer) and attach it to this scan. Bundled in the experiment ZIP.">PNG clean</button>
     <button class="btn btn-small btn-secondary attach-btn" onclick="attachExport('tiff', true)"
-            title="Render the current view as TIFF with embedded metadata and attach it to this scan. Bundled in the experiment ZIP.">TIFF + metadata</button>
+            title="Presentation TIFF: 8-bit RGB derived from the on-screen view. For slides / PowerPoint / Windows Photos. Not for quantification — use Normal TIFF for that.">Presentation TIFF</button>
+    <button class="btn btn-small btn-primary attach-btn" onclick="attachRawTiff()"
+            title="Raw 16-bit grayscale per channel (700 and 800). Byte-clean from the scanner, tagged with scan parameters + PIDinst identity. This is the file to use for densitometry / quantification.">Normal TIFF</button>
+    <button class="btn btn-small btn-secondary attach-btn" onclick="attachHyperstack()"
+            title="ImageJ HyperStack: single 16-bit multi-channel TIFF that opens in Fiji already colored red/green, but the two channels stay separately quantifiable. Windows Photos will show only the first channel as grayscale.">ImageJ TIFF</button>
     <span style="margin-left:auto"></span>
     <button class="btn btn-small btn-secondary" id="btnCrop" onclick="startCrop()"
             title="Click and drag on the image to mark an export region. The next PNG/TIFF you attach will use just that region; everything else is ignored.">Crop region</button>
@@ -1982,6 +1986,53 @@ async function attachExport(format, includeFooter) {
     showToast(`Attached to experiment: ${body.filename}`);
     refreshHistory();  // update per-scan attachment badges
   } catch (e) { showToast('Attach failed: ' + e.message, true); }
+}
+
+async function attachRawTiff() {
+  // Attach two raw 16-bit grayscale TIFFs (700 + 800) to the current scan.
+  // These are the byte-clean scanner outputs plus our provenance JSON in
+  // private tag 65000 — the quantification-of-record artefacts.
+  const expId = (document.getElementById('experimentId')?.value || '').trim();
+  const scanName = (ChannelCache.scan_name
+                    || document.getElementById('scanName')?.value
+                    || '').trim();
+  if (!expId) { showToast('No experiment ID — reload the page', true); return; }
+  if (!scanName) { showToast('No scan loaded — run a scan first, then attach', true); return; }
+
+  try {
+    const resp = await fetch('/api/image/raw-both', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({experiment_id: expId, scan_name: scanName}),
+    });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.detail || 'HTTP ' + resp.status);
+    const names = (body.files || []).map(f => f.filename).join(', ');
+    showToast(`Attached raw TIFFs: ${names}`);
+    refreshHistory();
+  } catch (e) { showToast('Raw TIFF attach failed: ' + e.message, true); }
+}
+
+async function attachHyperstack() {
+  // Attach an ImageJ HyperStack TIFF (16-bit × 2 channels + red/green LUTs)
+  // to the current scan. Opens in Fiji already colored; Windows Photos
+  // shows only the first channel as grayscale (documented limitation).
+  const expId = (document.getElementById('experimentId')?.value || '').trim();
+  const scanName = (ChannelCache.scan_name
+                    || document.getElementById('scanName')?.value
+                    || '').trim();
+  if (!expId) { showToast('No experiment ID — reload the page', true); return; }
+  if (!scanName) { showToast('No scan loaded — run a scan first, then attach', true); return; }
+
+  try {
+    const resp = await fetch('/api/image/hyperstack', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({experiment_id: expId, scan_name: scanName}),
+    });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.detail || 'HTTP ' + resp.status);
+    showToast(`Attached ImageJ HyperStack: ${body.filename}`);
+    refreshHistory();
+  } catch (e) { showToast('HyperStack attach failed: ' + e.message, true); }
 }
 
 /* ============================================================================

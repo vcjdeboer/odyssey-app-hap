@@ -23,7 +23,9 @@ from plr_v4.odyssey.status_backend import InstrumentState, normalize_state
 from plr_v4.odyssey.tagging import (
     build_identity_description,
     tag_tiff_with_identity,
+    write_hyperstack,
     DEFAULT_SOFTWARE_TAG,
+    PRIVATE_JSON_TAG,
 )
 
 __all__ = [
@@ -41,5 +43,7 @@ __all__ = [
     "normalize_state",
     "build_identity_description",
     "tag_tiff_with_identity",
+    "write_hyperstack",
     "DEFAULT_SOFTWARE_TAG",
+    "PRIVATE_JSON_TAG",
 ]

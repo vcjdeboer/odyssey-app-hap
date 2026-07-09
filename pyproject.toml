@@ -28,6 +28,11 @@ dependencies = [
   "uvicorn[standard]",
   "websockets",
   "Pillow",
+  "numpy",
+  # tifffile: bio-imaging TIFF library. Preserves arbitrary vendor tags
+  # on round-trip (Pillow drops them). Also writes ImageJ HyperStack
+  # multi-channel TIFFs that Fiji opens already colored.
+  "tifffile",
   # PLR + Odyssey driver — pinned to the fork branch until the upstream
   # PR (vcjdeboer/pylabrobot:odyssey-v1b1) merges into pylabrobot/main.
   "pylabrobot[odyssey] @ git+https://github.com/vcjdeboer/pylabrobot.git@odyssey-v1b1",
