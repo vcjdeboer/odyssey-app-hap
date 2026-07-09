@@ -1531,7 +1531,21 @@ def _generate_placeholder_image():
 
 @app.post("/api/record")
 async def save_record(data: dict):
-    """Save a complete Western blot metadata record."""
+    """Save a complete Western blot metadata record.
+
+    Writes twice ("copy on write"):
+      1. Primary: ``odyssey_app/records/<timestamp>_<scan>.json`` — this
+         is where ``list_records()`` reads from for the sidebar history
+         panel, so it must stay.
+      2. Mirror: ``<DATA_ROOT>/<year>/<operator>/<experiment_id>/record__<scan>.json``
+         — the operator's own copy, alongside their exports. If the
+         mirror write fails for any reason, we log but keep the primary
+         write successful — record capture should never fail because of
+         a mirror-side issue.
+
+    Both writes are safe under the write-only guarantee: existing files
+    get a _2, _3, ... suffix; nothing is ever deleted or overwritten.
+    """
     global _current_record
     try:
         record = WesternBlotRecord.from_dict(data)
@@ -1546,9 +1560,31 @@ async def save_record(data: dict):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{timestamp}_{safe_name}.json"
         filepath = RECORDS_DIR / filename
-        filepath.write_text(record.to_json())
+        # Primary write — never overwrite, keep app history intact.
+        actual_primary = _write_no_overwrite(filepath, record.to_json().encode("utf-8"))
 
-        return {"status": "ok", "filename": filename}
+        # Mirror to the operator's data folder ("copy on write" per user
+        # request 2026-07-09). Skipped silently if we can't figure out
+        # operator or experiment_id.
+        mirror_filename = None
+        try:
+            operator = getattr(record, "operator", "") or ""
+            experiment_id = getattr(record, "experiment_id", "") or ""
+            if experiment_id:
+                mirror_dir = _operator_export_dir(operator, experiment_id)
+                mirror_target = mirror_dir / f"record__{safe_name}.json"
+                actual_mirror = _write_no_overwrite(
+                    mirror_target, record.to_json().encode("utf-8"),
+                )
+                mirror_filename = str(actual_mirror)
+        except Exception as e:
+            logging.info("Record mirror write skipped: %s", e)
+
+        return {
+            "status": "ok",
+            "filename": actual_primary.name,
+            "mirror": mirror_filename,
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1798,9 +1834,26 @@ async def _export_records_matching(
                         )
 
     buf.seek(0)
+    zip_bytes = buf.getvalue()
     filename = f"{safe}_{export_ts}.zip"
+
+    # Auto-save the ZIP into the operator's data folder when we're exporting
+    # by experiment_id (2026-07-09 user request). The single experiment maps
+    # cleanly to one operator; project exports span sessions and get skipped
+    # here — user still gets the download either way.
+    if key_in_record == "experiment_id" and matching:
+        try:
+            operator = (matching[0][1].get("operator") or "").strip()
+            experiment_id = clean
+            mirror_dir = _operator_export_dir(operator, experiment_id)
+            # Clear filename labelling: it's the experiment export bundle.
+            mirror_target = mirror_dir / f"{safe}__experiment_exports_{export_ts}.zip"
+            _write_no_overwrite(mirror_target, zip_bytes)
+        except Exception as e:
+            logging.info("Experiment ZIP mirror write skipped: %s", e)
+
     return Response(
-        content=buf.getvalue(),
+        content=zip_bytes,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
